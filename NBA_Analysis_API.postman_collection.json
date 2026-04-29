@@ -1,0 +1,375 @@
+{
+  "info": {
+    "name": "NBA Analysis API",
+    "description": "Collection completa para testar a NBA Analysis API.\n\n**Variáveis de coleção:**\n- `base_url` — endereço da API (padrão: http://localhost:8000)\n- `player_id` — ID do jogador (padrão: 2544 = LeBron James)\n- `game_id` — ID de um jogo histórico\n- `live_game_id` — ID de um jogo ao vivo (buscar em /games/live/today)\n- `season` — temporada histórica (padrão: 2024-25)\n- `live_season` — temporada atual para rotas live (padrão: 2024-25)\n\n**Fluxo sugerido:**\n1. GET /health → confirma que a API está rodando\n2. GET /players/search → pega o player_id\n3. GET /players/{player_id}/gamelog → pega um game_id histórico\n4. GET /games/live/today → pega um live_game_id\n5. Demais rotas de análise e live",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "player_id",
+      "value": "2544",
+      "type": "string",
+      "description": "LeBron James. Use /players/search para encontrar outros."
+    },
+    {
+      "key": "game_id",
+      "value": "0022400001",
+      "type": "string",
+      "description": "ID de jogo histórico. Busque em /players/{player_id}/gamelog."
+    },
+    {
+      "key": "live_game_id",
+      "value": "0022500001",
+      "type": "string",
+      "description": "ID de jogo ao vivo. Busque em /games/live/today."
+    },
+    {
+      "key": "season",
+      "value": "2024-25",
+      "type": "string"
+    },
+    {
+      "key": "live_season",
+      "value": "2024-25",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "🟢 Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Verifica se a API está rodando. Deve retornar {\"status\": \"ok\"}."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "status": "OK",
+              "code": 200,
+              "body": "{\"status\": \"ok\"}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🔍 Jogadores",
+      "item": [
+        {
+          "name": "Buscar jogador por nome",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/search?name=lebron",
+              "host": ["{{base_url}}"],
+              "path": ["players", "search"],
+              "query": [
+                {
+                  "key": "name",
+                  "value": "lebron",
+                  "description": "Nome ou parte do nome do jogador"
+                }
+              ]
+            },
+            "description": "Busca jogadores pelo nome. Retorna id, full_name e is_active.\n\nExemplos de busca:\n- lebron\n- curry\n- durant\n- jokic"
+          }
+        },
+        {
+          "name": "Buscar jogador por nome — Curry",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/search?name=curry",
+              "host": ["{{base_url}}"],
+              "path": ["players", "search"],
+              "query": [
+                {
+                  "key": "name",
+                  "value": "curry"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Game log da temporada",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/{{player_id}}/gamelog?season={{season}}",
+              "host": ["{{base_url}}"],
+              "path": ["players", "{{player_id}}", "gamelog"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{season}}",
+                  "description": "Formato YYYY-YY, ex: 2024-25"
+                }
+              ]
+            },
+            "description": "Retorna todos os jogos do jogador na temporada.\n\nUse o campo game_id retornado para consultar play-by-play e pontos por período."
+          }
+        }
+      ]
+    },
+    {
+      "name": "📊 Análise Histórica",
+      "item": [
+        {
+          "name": "Análise geral da temporada",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/{{player_id}}/analysis/season?season={{season}}",
+              "host": ["{{base_url}}"],
+              "path": ["players", "{{player_id}}", "analysis", "season"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{season}}"
+                }
+              ]
+            },
+            "description": "Retorna:\n- Médias gerais da temporada (pontos, rebotes, assistências, minutos)\n- Médias dos últimos 5 jogos\n- Médias dos últimos 10 jogos\n- Trend: diferença entre últimos 5 e média geral"
+          }
+        },
+        {
+          "name": "Estatísticas jogo a jogo",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/{{player_id}}/stats/games?season={{season}}",
+              "host": ["{{base_url}}"],
+              "path": ["players", "{{player_id}}", "stats", "games"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{season}}"
+                }
+              ]
+            },
+            "description": "Lista de todos os jogos com pontos, rebotes, assistências e minutos. Ideal para montar gráficos de linha no frontend."
+          }
+        },
+        {
+          "name": "Média de pontos por quarto — últimos 10 jogos",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/{{player_id}}/analysis/points-by-period?season={{season}}&last_games=10",
+              "host": ["{{base_url}}"],
+              "path": ["players", "{{player_id}}", "analysis", "points-by-period"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{season}}"
+                },
+                {
+                  "key": "last_games",
+                  "value": "10",
+                  "description": "Número de jogos a analisar (máx: 20). ATENÇÃO: faz 1 chamada PBP por jogo — pode ser lento."
+                }
+              ]
+            },
+            "description": "Calcula a média de pontos por quarto (1, 2, 3, 4, OT) com base nos últimos N jogos.\n\n⚠️ ATENÇÃO: Esta rota busca play-by-play para cada jogo. Com last_games=10 pode levar 30–120 segundos na primeira chamada."
+          }
+        },
+        {
+          "name": "Média de pontos por quarto — últimos 5 jogos",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/{{player_id}}/analysis/points-by-period?season={{season}}&last_games=5",
+              "host": ["{{base_url}}"],
+              "path": ["players", "{{player_id}}", "analysis", "points-by-period"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{season}}"
+                },
+                {
+                  "key": "last_games",
+                  "value": "5"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Dashboard completo",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/{{player_id}}/dashboard?season={{season}}&last_games=10",
+              "host": ["{{base_url}}"],
+              "path": ["players", "{{player_id}}", "dashboard"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{season}}"
+                },
+                {
+                  "key": "last_games",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Resposta combinada com:\n- Resumo da temporada\n- Médias dos últimos 5 e 10 jogos\n- Pontos por quarto nos últimos N jogos\n- Lista de jogos recentes\n- Tendência: above_average / below_average / stable\n\n⚠️ ATENÇÃO: Inclui cálculo de pontos por quarto — pode ser lento na primeira chamada."
+          }
+        }
+      ]
+    },
+    {
+      "name": "🎮 Jogos Históricos (Play-by-Play)",
+      "item": [
+        {
+          "name": "Play-by-play de um jogo",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/games/{{game_id}}/play-by-play",
+              "host": ["{{base_url}}"],
+              "path": ["games", "{{game_id}}", "play-by-play"]
+            },
+            "description": "Retorna todos os eventos do play-by-play de um jogo finalizado.\n\nComo obter um game_id:\n1. GET /players/{player_id}/gamelog\n2. Copie o campo game_id de qualquer jogo"
+          }
+        },
+        {
+          "name": "Pontos por quarto — jogador num jogo específico",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/{{player_id}}/games/{{game_id}}/points-by-period",
+              "host": ["{{base_url}}"],
+              "path": ["players", "{{player_id}}", "games", "{{game_id}}", "points-by-period"]
+            },
+            "description": "Calcula os pontos do jogador por quarto em um jogo específico usando play-by-play.\n\nContabiliza:\n- Field goals (2 pts)\n- Three-pointers (3 pts)\n- Free throws convertidos (1 pt)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "🔴 Live — Jogos ao Vivo",
+      "item": [
+        {
+          "name": "Jogos do dia (scoreboard)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/games/live/today",
+              "host": ["{{base_url}}"],
+              "path": ["games", "live", "today"]
+            },
+            "description": "Lista todos os jogos do dia com:\n- Status: not_started / in_progress / final\n- Placar atual\n- Período e clock\n- Times (nome, tricode)\n\nUse o game_id retornado nas demais rotas live.\n\n📝 Cache de 30 segundos."
+          }
+        },
+        {
+          "name": "Boxscore live",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/games/{{live_game_id}}/live-boxscore",
+              "host": ["{{base_url}}"],
+              "path": ["games", "{{live_game_id}}", "live-boxscore"]
+            },
+            "description": "Retorna estatísticas em tempo real de todos os jogadores que já entraram em quadra.\n\nInclui para cada jogador:\n- Minutos, pontos, rebotes, assistências\n- FG, 3PT, FT feitos/tentados\n- Plus/minus\n\n📝 Cache de 15 segundos."
+          }
+        },
+        {
+          "name": "Análise live — todos os jogadores",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/games/{{live_game_id}}/live-analysis?season={{live_season}}",
+              "host": ["{{base_url}}"],
+              "path": ["games", "{{live_game_id}}", "live-analysis"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{live_season}}",
+                  "description": "Temporada para buscar médias históricas do jogador"
+                }
+              ]
+            },
+            "description": "Para cada jogador que já entrou em quadra, compara estatísticas atuais com a média da temporada.\n\nFórmulas:\n- expected = season_avg × (current_minutes / season_avg_minutes)\n- score = pts_diff×1.0 + reb_diff×0.7 + ast_diff×0.8\n\nStatus por score:\n- hot          → score ≥ 5\n- above_average → score ≥ 2\n- normal        → score entre -2 e 2\n- below_average → score ≤ -2\n- cold          → score ≤ -5\n\n⚠️ ATENÇÃO: A primeira chamada busca a média da temporada de cada jogador via nba_api. Pode levar 1–3 minutos. Chamadas seguintes (dentro de 10 min) usam cache.\n\n📝 Marcado como experimental: analysis_type = experimental_live_analysis"
+          }
+        },
+        {
+          "name": "Comparação live — jogador específico",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/players/{{player_id}}/games/{{live_game_id}}/live-comparison?season={{live_season}}",
+              "host": ["{{base_url}}"],
+              "path": ["players", "{{player_id}}", "games", "{{live_game_id}}", "live-comparison"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{live_season}}"
+                }
+              ]
+            },
+            "description": "Compara as estatísticas atuais de um jogador específico com sua média da temporada.\n\nRetorna erro 404 se o jogador ainda não entrou em quadra no jogo."
+          }
+        },
+        {
+          "name": "Hot ranking — top 5 jogadores",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/games/{{live_game_id}}/live-hot-ranking?season={{live_season}}&limit=5",
+              "host": ["{{base_url}}"],
+              "path": ["games", "{{live_game_id}}", "live-hot-ranking"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{live_season}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "5",
+                  "description": "Quantidade de jogadores no ranking (máx: 20)"
+                }
+              ]
+            },
+            "description": "Retorna os N jogadores com maior score no jogo atual, ordenados do melhor para o pior.\n\nÚtil para identificar rapidamente quem está dominando o jogo."
+          }
+        },
+        {
+          "name": "Hot ranking — top 10 jogadores",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/games/{{live_game_id}}/live-hot-ranking?season={{live_season}}&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["games", "{{live_game_id}}", "live-hot-ranking"],
+              "query": [
+                {
+                  "key": "season",
+                  "value": "{{live_season}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
