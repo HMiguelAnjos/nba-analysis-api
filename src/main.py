@@ -84,7 +84,10 @@ def health():
 
 @app.get("/players/search", response_model=list[PlayerSchema])
 def search_players(name: str = Query(..., min_length=2, description="Nome do jogador")):
-    results = nba.search_players(name)
+    try:
+        results = nba.search_players(name)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Erro ao buscar jogadores: {exc}")
     if not results:
         raise HTTPException(status_code=404, detail=f"Nenhum jogador encontrado para '{name}'.")
     return results
