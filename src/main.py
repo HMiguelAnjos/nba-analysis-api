@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,16 +28,47 @@ from src.services.live_analysis_service import LiveAnalysisService
 from src.services.live_game_service import LiveGameService
 from src.services.nba_service import NbaService
 from src.services.player_analysis_service import PlayerAnalysisService
+from src.worker.live_worker import LiveWorker
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+# ------------------------------------------------------------------ #
+# Serviços compartilhados (instanciados antes do lifespan)            #
+# ------------------------------------------------------------------ #
+
+nba = NbaService()
+analysis = PlayerAnalysisService(nba)
+live_game = LiveGameService()
+live_analysis = LiveAnalysisService(live_game, analysis)
+worker = LiveWorker(live_game)
+
+MAX_LAST_GAMES = 20
+DEFAULT_SEASON = "2024-25"
+
+
+# ------------------------------------------------------------------ #
+# Lifespan: inicia/encerra o worker junto com a API                   #
+# ------------------------------------------------------------------ #
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ARG001
+    worker.start()
+    yield
+    worker.stop()
+
+
+# ------------------------------------------------------------------ #
+# Aplicação FastAPI                                                    #
+# ------------------------------------------------------------------ #
+
 app = FastAPI(
     title="NBA Analysis API",
     description="Estatísticas da NBA para inteligência de apostas",
-    version="0.3.0",
+    version="0.4.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -47,13 +79,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-nba = NbaService()
-analysis = PlayerAnalysisService(nba)
-live_game = LiveGameService()
-live_analysis = LiveAnalysisService(live_game, analysis)
 
-MAX_LAST_GAMES = 20
-DEFAULT_SEASON = "2024-25"
+# ------------------------------------------------------------------ #
+# Lifespan: inicia/encerra o worker junto com a API                   #
+# ------------------------------------------------------------------ #
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ARG001
+    worker.start()
+    yield
+    worker.stop()
 
 
 # ------------------------------------------------------------------ #
@@ -80,6 +115,24 @@ def _last_games_query() -> int:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/live/cache/status")
+def cache_status():
+    """
+    Estado atual do worker de cache local.
+
+    Resposta exemplo::
+
+        {
+          "status": "running",
+          "last_update": "2025-01-15T20:30:00+00:00",
+          "next_update_in_seconds": 3.2,
+          "games_cached": 2,
+          "errors": []
+        }
+    """
+    return worker.status()
 
 
 @app.get("/players/search", response_model=list[PlayerSchema])

@@ -14,6 +14,16 @@ source .venv/bin/activate        # Linux/macOS
 pip install -r requirements.txt
 ```
 
+### Em casos de arquivos travados
+```bash
+rm -rf .venv
+python -m venv .venv
+source .venv/Scripts/activate     # Windows
+source .venv/bin/activate        # Linux/macOS
+
+pip install -r requirements.txt
+```
+
 ---
 
 ## Como rodar
