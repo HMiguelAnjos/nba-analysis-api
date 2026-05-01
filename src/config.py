@@ -26,3 +26,11 @@ PORT: int = int(os.getenv("PORT", "8000"))
 
 # Em modo desktop a API deve escutar SOMENTE em localhost
 HOST: str = os.getenv("HOST", "127.0.0.1")
+
+# Optional HTTP proxy for stats.nba.com (blocked on cloud IPs without one)
+# Ex: STATS_PROXY=http://user:pass@host:port
+STATS_PROXY: str | None = os.getenv("STATS_PROXY") or None
+
+# Live games worker
+ENABLE_LIVE_WORKER: bool = os.getenv("ENABLE_LIVE_WORKER", "true").lower() == "true"
+LIVE_POLL_INTERVAL_MS: int = int(os.getenv("LIVE_POLL_INTERVAL_MS", "2000"))

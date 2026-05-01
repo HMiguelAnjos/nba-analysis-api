@@ -14,6 +14,7 @@ from src.schemas.live_schemas import (
     HotRankingSchema,
     LiveBoxscoreSchema,
     LiveGameAnalysisSchema,
+    LiveGamesCachedResponseSchema,
     LivePlayerComparisonSchema,
     TodayGamesSchema,
 )
@@ -23,12 +24,14 @@ from src.schemas.nba_schemas import (
     PlayerSchema,
     PointsByPeriodSchema,
 )
-from src.config import ALLOWED_ORIGINS
+from src.cache.live_games_cache import InMemoryLiveGamesCache
+from src.config import ALLOWED_ORIGINS, ENABLE_LIVE_WORKER, LIVE_POLL_INTERVAL_MS
+from src.services.anomaly_service import AnomalyService
 from src.services.live_analysis_service import LiveAnalysisService
 from src.services.live_game_service import LiveGameService
 from src.services.nba_service import NbaService
 from src.services.player_analysis_service import PlayerAnalysisService
-from src.worker.live_worker import LiveWorker
+from src.workers.live_games_worker import start_live_games_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,33 +39,36 @@ logging.basicConfig(
 )
 
 # ------------------------------------------------------------------ #
-# Serviços compartilhados (instanciados antes do lifespan)            #
+# Shared instances                                                    #
 # ------------------------------------------------------------------ #
 
 nba = NbaService()
 analysis = PlayerAnalysisService(nba)
 live_game = LiveGameService()
 live_analysis = LiveAnalysisService(live_game, analysis)
-worker = LiveWorker(live_game)
+anomaly = AnomalyService()
+live_cache = InMemoryLiveGamesCache()
 
 MAX_LAST_GAMES = 20
 DEFAULT_SEASON = "2024-25"
 
 
 # ------------------------------------------------------------------ #
-# Lifespan: inicia/encerra o worker junto com a API                   #
+# App lifespan (startup / shutdown)                                   #
 # ------------------------------------------------------------------ #
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ARG001
-    worker.start()
+async def lifespan(app: FastAPI):
+    if ENABLE_LIVE_WORKER:
+        await start_live_games_worker(
+            cache=live_cache,
+            fetch_fn=live_game.fetch_scoreboard,
+            interval_ms=LIVE_POLL_INTERVAL_MS,
+        )
+    else:
+        logging.getLogger(__name__).info("Live games worker disabled (ENABLE_LIVE_WORKER=false).")
     yield
-    worker.stop()
 
-
-# ------------------------------------------------------------------ #
-# Aplicação FastAPI                                                    #
-# ------------------------------------------------------------------ #
 
 app = FastAPI(
     title="NBA Analysis API",
@@ -78,17 +84,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# ------------------------------------------------------------------ #
-# Lifespan: inicia/encerra o worker junto com a API                   #
-# ------------------------------------------------------------------ #
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ARG001
-    worker.start()
-    yield
-    worker.stop()
 
 
 # ------------------------------------------------------------------ #
@@ -120,19 +115,25 @@ def health():
 @app.get("/live/cache/status")
 def cache_status():
     """
-    Estado atual do worker de cache local.
+    Estado atual do cache de jogos ao vivo.
 
-    Resposta exemplo::
-
-        {
-          "status": "running",
-          "last_update": "2025-01-15T20:30:00+00:00",
-          "next_update_in_seconds": 3.2,
-          "games_cached": 2,
-          "errors": []
-        }
+    Retorna metadados do último snapshot gravado pelo worker:
+    updated_at, age_ms, quantidade de jogos em cache.
     """
-    return worker.status()
+    snapshot = live_cache.get_snapshot()
+    if snapshot is None:
+        return {
+            "status": "initializing",
+            "last_update": None,
+            "games_cached": 0,
+            "age_ms": None,
+        }
+    return {
+        "status": "running",
+        "last_update": snapshot.updated_at.isoformat(),
+        "games_cached": len(snapshot.data.games),
+        "age_ms": snapshot.age_ms,
+    }
 
 
 @app.get("/players/search", response_model=list[PlayerSchema])
@@ -265,12 +266,20 @@ def dashboard(
 # Live routes  (register /games/live/today BEFORE /games/{game_id}/…)#
 # ------------------------------------------------------------------ #
 
-@app.get("/games/live/today", response_model=TodayGamesSchema)
+@app.get("/games/live/today", response_model=LiveGamesCachedResponseSchema)
 def today_games():
-    try:
-        return live_game.get_today_games()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    snapshot = live_cache.get_snapshot()
+    if snapshot is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Live games data not ready yet. Worker is initializing, try again in a moment.",
+        )
+    return LiveGamesCachedResponseSchema(
+        date=snapshot.data.date,
+        games=snapshot.data.games,
+        updated_at=snapshot.updated_at.isoformat(),
+        age_ms=snapshot.age_ms,
+    )
 
 
 @app.get("/games/{game_id}/live-boxscore", response_model=LiveBoxscoreSchema)

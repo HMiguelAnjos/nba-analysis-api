@@ -1,3 +1,4 @@
+from typing import Literal
 from pydantic import BaseModel
 
 
@@ -182,3 +183,15 @@ class HotRankingSchema(BaseModel):
     game_id: str
     limit: int
     ranking: list[HotRankingPlayerSchema]
+
+
+# ------------------------------------------------------------------ #
+# Live games cached response                                          #
+# ------------------------------------------------------------------ #
+
+class LiveGamesCachedResponseSchema(BaseModel):
+    date: str
+    games: list[LiveGameSchema]
+    updated_at: str          # ISO 8601 UTC
+    age_ms: int              # milliseconds since last worker update
+    source: Literal["cache"] = "cache"

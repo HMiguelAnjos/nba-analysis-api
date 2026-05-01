@@ -65,13 +65,12 @@ class LiveGameService:
     def __init__(self) -> None:
         self._cache = SimpleCache()
 
-    def get_today_games(self) -> TodayGamesSchema:
-        cached = self._cache.get("scoreboard")
-        if cached:
-            logger.debug("Scoreboard served from cache")
-            return cached
-
-        logger.info("Fetching live scoreboard")
+    def fetch_scoreboard(self) -> TodayGamesSchema:
+        """
+        Fetch live scoreboard directly from the NBA API.
+        Called by the background worker — no caching here.
+        """
+        logger.info("Fetching live scoreboard from NBA API.")
         try:
             board = scoreboard.ScoreBoard()
             data = board.get_dict()["scoreboard"]
@@ -104,8 +103,17 @@ class LiveGameService:
             )
 
         result = TodayGamesSchema(date=data.get("gameDate", ""), games=games)
+        logger.info("Scoreboard fetched: %d games.", len(games))
+        return result
+
+    def get_today_games(self) -> TodayGamesSchema:
+        """Legacy method kept for internal use (live analysis, boxscore routes)."""
+        cached = self._cache.get("scoreboard")
+        if cached:
+            logger.debug("Scoreboard served from cache")
+            return cached
+        result = self.fetch_scoreboard()
         self._cache.set("scoreboard", result, SCOREBOARD_TTL)
-        logger.info("Scoreboard fetched: %d games", len(games))
         return result
 
     def get_live_boxscore(self, game_id: str) -> LiveBoxscoreSchema:
