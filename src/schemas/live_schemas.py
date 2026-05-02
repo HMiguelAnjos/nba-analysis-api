@@ -180,6 +180,9 @@ class HotRankingPlayerSchema(BaseModel):
     points_diff: float
     assists_diff: float
     rebounds_diff: float
+    projected_points: float
+    projected_assists: float
+    projected_rebounds: float
     shooting_impact: float
     status: str
     score: float

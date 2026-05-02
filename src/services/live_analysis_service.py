@@ -271,6 +271,18 @@ class LiveAnalysisService:
             analysis_type=ANALYSIS_TYPE,
         )
 
+    @staticmethod
+    def _project_game(stat: float, minutes: float, avg_stat: float, avg_minutes: float) -> float:
+        """Blended full-game projection. Alpha grows 0→0.6 as minutes played approaches avg_minutes."""
+        if avg_minutes <= 0:
+            return round(avg_stat, 1)
+        if minutes < 1.0:
+            return round(avg_stat, 1)
+        current_ppm = stat / minutes
+        season_ppm  = avg_stat / avg_minutes
+        alpha = min(minutes / avg_minutes, 0.60)
+        return round((alpha * current_ppm + (1.0 - alpha) * season_ppm) * avg_minutes, 1)
+
     def get_hot_ranking(
         self, game_id: str, season: str, limit: int
     ) -> HotRankingSchema:
@@ -297,6 +309,18 @@ class LiveAnalysisService:
                     points_diff=p.difference.points,
                     assists_diff=p.difference.assists,
                     rebounds_diff=p.difference.rebounds,
+                    projected_points=self._project_game(
+                        p.current.points, p.minutes,
+                        p.season_average.points, p.season_average.minutes,
+                    ),
+                    projected_assists=self._project_game(
+                        p.current.assists, p.minutes,
+                        p.season_average.assists, p.season_average.minutes,
+                    ),
+                    projected_rebounds=self._project_game(
+                        p.current.rebounds, p.minutes,
+                        p.season_average.rebounds, p.season_average.minutes,
+                    ),
                     shooting_impact=p.shooting_impact,
                     status=p.status,
                     score=p.score,
