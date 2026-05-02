@@ -172,8 +172,14 @@ class HotRankingPlayerSchema(BaseModel):
     team: str
     minutes: float
     current_points: int
+    current_assists: int
+    current_rebounds: int
     expected_points: float
+    expected_assists: float
+    expected_rebounds: float
     points_diff: float
+    assists_diff: float
+    rebounds_diff: float
     shooting_impact: float
     status: str
     score: float
