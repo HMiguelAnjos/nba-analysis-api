@@ -273,15 +273,23 @@ class LiveAnalysisService:
 
     @staticmethod
     def _project_game(stat: float, minutes: float, avg_stat: float, avg_minutes: float) -> float:
-        """Blended full-game projection. Alpha grows 0→0.6 as minutes played approaches avg_minutes."""
+        """
+        Blended full-game projection.
+
+        Uses max(minutes, avg_minutes) as the game endpoint so that when a
+        player has already played more than their average (e.g. overtime or
+        heavy rotation), the projection is never lower than the proportional
+        expected-until-now value.
+        """
         if avg_minutes <= 0:
             return round(avg_stat, 1)
         if minutes < 1.0:
             return round(avg_stat, 1)
+        game_length = max(minutes, avg_minutes)
         current_ppm = stat / minutes
         season_ppm  = avg_stat / avg_minutes
         alpha = min(minutes / avg_minutes, 0.60)
-        return round((alpha * current_ppm + (1.0 - alpha) * season_ppm) * avg_minutes, 1)
+        return round((alpha * current_ppm + (1.0 - alpha) * season_ppm) * game_length, 1)
 
     def get_hot_ranking(
         self, game_id: str, season: str, limit: int
