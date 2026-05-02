@@ -1,5 +1,10 @@
+import json
+import logging
+import os
 import time
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class SimpleCache:
@@ -61,3 +66,67 @@ class SimpleCache:
 
 # Alias para retrocompatibilidade
 LocalCacheService = SimpleCache
+
+
+class PersistentCache(SimpleCache):
+    """
+    SimpleCache com fallback em disco (JSON).
+
+    Ao fazer `set`, grava também em *path* no disco.
+    Ao fazer `get` com miss na memória, tenta carregar do disco.
+
+    Isso garante que médias de temporada sobrevivam a restarts do
+    container sem precisar chamar stats.nba.com novamente.
+
+    TTL é armazenado como timestamp Unix absoluto no JSON, então
+    funciona corretamente entre processos.
+    """
+
+    def __init__(self, path: str = "/tmp/nba_season_cache.json") -> None:
+        super().__init__()
+        self._path = path
+        self._disk: dict[str, tuple[Any, float]] = {}
+        self._load_disk()
+
+    def _load_disk(self) -> None:
+        try:
+            if os.path.exists(self._path):
+                with open(self._path, "r") as f:
+                    raw = json.load(f)
+                now = time.time()
+                self._disk = {k: (v, exp) for k, (v, exp) in raw.items() if exp > now}
+                logger.info("PersistentCache: carregou %d entradas do disco", len(self._disk))
+        except Exception as exc:
+            logger.warning("PersistentCache: falha ao carregar disco: %s", exc)
+            self._disk = {}
+
+    def _save_disk(self) -> None:
+        try:
+            with open(self._path, "w") as f:
+                json.dump(self._disk, f)
+        except Exception as exc:
+            logger.warning("PersistentCache: falha ao salvar disco: %s", exc)
+
+    def get(self, key: str) -> Optional[Any]:
+        # 1. memória
+        value = super().get(key)
+        if value is not None:
+            return value
+        # 2. disco
+        entry = self._disk.get(key)
+        if entry is None:
+            return None
+        value, expiry = entry
+        if time.time() > expiry:
+            del self._disk[key]
+            return None
+        # promove para memória (TTL restante)
+        remaining = int(expiry - time.time())
+        if remaining > 0:
+            super().set(key, value, remaining)
+        return value
+
+    def set(self, key: str, value: Any, ttl: int) -> None:
+        super().set(key, value, ttl)
+        self._disk[key] = (value, time.time() + ttl)
+        self._save_disk()

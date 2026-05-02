@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from src.schemas.live_schemas import (
@@ -17,7 +18,7 @@ from src.schemas.live_schemas import (
 )
 from src.services.live_game_service import LiveGameService
 from src.services.player_analysis_service import PlayerAnalysisService
-from src.utils.cache import SimpleCache
+from src.utils.cache import PersistentCache
 from src.utils.stats import (
     calc_player_score,
     calc_player_status,
@@ -27,7 +28,7 @@ from src.utils.stats import (
 
 logger = logging.getLogger(__name__)
 
-SEASON_AVG_TTL = 600       # 10 minutes
+SEASON_AVG_TTL = 86_400    # 24 hours — médias mudam no máximo 1x/dia
 ANALYSIS_TYPE = "experimental_live_analysis"
 
 
@@ -39,7 +40,7 @@ class LiveAnalysisService:
     ) -> None:
         self.live = live_game_service
         self.player_analysis = player_analysis_service
-        self._cache = SimpleCache()
+        self._cache = PersistentCache()
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -55,7 +56,7 @@ class LiveAnalysisService:
             return cached
 
         try:
-            result = self.player_analysis.get_season_analysis(player_id, season)
+            result = self.player_analysis.get_season_analysis(player_id, season, fast=True)
             avgs = {
                 "points": result.averages.points,
                 "rebounds": result.averages.rebounds,
@@ -177,17 +178,34 @@ class LiveAnalysisService:
     def _analyze_boxscore(
         self, boxscore: LiveBoxscoreSchema, season: str
     ) -> tuple[list[LivePlayerAnalysisSchema], list[LiveAnalysisErrorSchema]]:
-        """Analyze all players in both teams. Errors are collected, not raised."""
-        analyzed: list[LivePlayerAnalysisSchema] = []
-        errors: list[LiveAnalysisErrorSchema] = []
+        """
+        Analisa todos os jogadores dos dois times em paralelo.
 
-        teams = [
-            (boxscore.home_team.players, boxscore.home_team.tricode),
-            (boxscore.away_team.players, boxscore.away_team.tricode),
+        ThreadPoolExecutor dispara todas as buscas de médias simultaneamente,
+        então o tempo total é ~6 s (1 timeout) e não 20×6 s = 120 s.
+        """
+        tasks = [
+            (player, team.tricode)
+            for team in (boxscore.home_team, boxscore.away_team)
+            for player in team.players
         ]
-        for players, tricode in teams:
-            for player in players:
-                result, reason = self._analyze_player(player, tricode, season)
+
+        analyzed: list[LivePlayerAnalysisSchema] = []
+        errors:   list[LiveAnalysisErrorSchema]  = []
+
+        with ThreadPoolExecutor(max_workers=min(len(tasks), 16)) as pool:
+            future_map = {
+                pool.submit(self._analyze_player, player, tricode, season): player
+                for player, tricode in tasks
+            }
+            for future in as_completed(future_map):
+                player = future_map[future]
+                try:
+                    result, reason = future.result()
+                except Exception as exc:
+                    logger.error("Erro inesperado analisando jogador %d: %s", player.player_id, exc)
+                    result, reason = None, f"unexpected_error: {exc}"
+
                 if result is not None:
                     analyzed.append(result)
                 else:

@@ -25,16 +25,20 @@ DEFAULT_TIMEOUT = 60
 MAX_RETRIES = 3
 RETRY_DELAY = 5.0
 
+# Timeout curto para contexto de análise ao vivo (parallel workers)
+LIVE_TIMEOUT = 6
+LIVE_MAX_RETRIES = 1
 
-def _with_retry(fn: Callable, *args, **kwargs) -> Any:
+
+def _with_retry(fn: Callable, *args, max_retries: int = MAX_RETRIES, **kwargs) -> Any:
     last_error: Exception | None = None
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(1, max_retries + 1):
         try:
             return fn(*args, **kwargs)
         except Exception as exc:
             last_error = exc
-            logger.warning("Attempt %d/%d failed: %s", attempt, MAX_RETRIES, exc)
-            if attempt < MAX_RETRIES:
+            logger.warning("Attempt %d/%d failed: %s", attempt, max_retries, exc)
+            if attempt < max_retries:
                 time.sleep(RETRY_DELAY)
     raise last_error
 
@@ -71,17 +75,23 @@ class NbaService:
             for p in matches
         ]
 
-    def get_player_gamelog(self, player_id: int, season: str) -> list[GameLogSchema]:
+    def get_player_gamelog(
+        self,
+        player_id: int,
+        season: str,
+        timeout: int = DEFAULT_TIMEOUT,
+        max_retries: int = MAX_RETRIES,
+    ) -> list[GameLogSchema]:
         logger.info("Fetching game log for player %d, season %s", player_id, season)
 
         def _fetch():
             return PlayerGameLog(
                 player_id=player_id,
                 season=season,
-                timeout=DEFAULT_TIMEOUT,
+                timeout=timeout,
             ).get_data_frames()[0]
 
-        df: pd.DataFrame = _with_retry(_fetch)
+        df: pd.DataFrame = _with_retry(_fetch, max_retries=max_retries)
 
         if df.empty:
             return []

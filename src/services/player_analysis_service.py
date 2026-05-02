@@ -82,9 +82,17 @@ class PlayerAnalysisService:
     # Public methods                                                       #
     # ------------------------------------------------------------------ #
 
-    def get_season_analysis(self, player_id: int, season: str) -> SeasonAnalysisSchema:
+    def get_season_analysis(
+        self,
+        player_id: int,
+        season: str,
+        fast: bool = False,
+    ) -> SeasonAnalysisSchema:
+        """fast=True usa timeout de 6 s e 1 tentativa (para análise ao vivo paralela)."""
+        from src.services.nba_service import LIVE_TIMEOUT, LIVE_MAX_RETRIES
         self._require_player(player_id)
-        logs = self.nba.get_player_gamelog(player_id, season)
+        extra = {"timeout": LIVE_TIMEOUT, "max_retries": LIVE_MAX_RETRIES} if fast else {}
+        logs = self.nba.get_player_gamelog(player_id, season, **extra)
         self._require_logs(logs, player_id, season)
 
         avgs = calc_stat_averages(logs)
