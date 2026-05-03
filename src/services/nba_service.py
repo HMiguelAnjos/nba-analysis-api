@@ -13,6 +13,7 @@ from src.schemas.nba_schemas import (
     PlayByPlayEventSchema,
     PointsByPeriodSchema,
 )
+from src.utils.cache import PersistentCache
 from src.utils.converters import (
     EVENT_TYPE_MAP,
     normalize_player_name,
@@ -29,6 +30,10 @@ RETRY_DELAY = 5.0
 # Timeout curto para contexto de análise ao vivo (parallel workers)
 LIVE_TIMEOUT = 6
 LIVE_MAX_RETRIES = 1
+
+# Gamelogs barely change after a game ends; 24h is more than enough
+# and gives huge resilience when stats.nba.com is blocking the host.
+GAMELOG_TTL = 86_400
 
 
 def _proxy_kwargs() -> dict:
@@ -94,6 +99,12 @@ def _fetch_pbp_df(game_id: str) -> pd.DataFrame:
 
 
 class NbaService:
+    def __init__(self) -> None:
+        # Persistent on-disk cache for player gamelogs. Survives container
+        # restarts and means a single successful fetch unlocks the data for
+        # 24 h regardless of stats.nba.com availability.
+        self._gamelog_cache = PersistentCache(path="/tmp/nba_gamelog_cache.json")
+
     def search_players(self, name: str) -> list[PlayerSchema]:
         query = normalize_player_name(name)
         logger.info("Searching players with query: %s", query)
@@ -122,7 +133,13 @@ class NbaService:
         timeout: int = DEFAULT_TIMEOUT,
         max_retries: int = MAX_RETRIES,
     ) -> list[GameLogSchema]:
-        logger.info("Fetching game log for player %d, season %s", player_id, season)
+        cache_key = f"gamelog:{player_id}:{season}"
+        cached = self._gamelog_cache.get(cache_key)
+        if cached is not None:
+            logger.info("Gamelog cache HIT for player %d, season %s", player_id, season)
+            return [GameLogSchema(**g) for g in cached]
+
+        logger.info("Gamelog cache MISS — fetching from stats.nba.com (player %d, season %s)", player_id, season)
 
         def _fetch():
             return PlayerGameLog(
@@ -157,6 +174,16 @@ class NbaService:
                     free_throws_attempted=int(row["FTA"]),
                 )
             )
+
+        # Persist for 24h so subsequent endpoints (analysis/season,
+        # stats/games, dashboard, etc.) survive any stats.nba.com outage.
+        if results:
+            self._gamelog_cache.set(
+                cache_key,
+                [g.model_dump() for g in results],
+                GAMELOG_TTL,
+            )
+            logger.info("Gamelog cached for player %d (%d games)", player_id, len(results))
         return results
 
     def get_play_by_play(self, game_id: str) -> list[PlayByPlayEventSchema]:
