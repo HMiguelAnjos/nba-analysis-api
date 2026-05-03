@@ -6,6 +6,7 @@ import pandas as pd
 from nba_api.stats.endpoints import PlayerGameLog, PlayByPlayV3
 from nba_api.stats.static import players
 
+from src.config import STATS_PROXY
 from src.schemas.nba_schemas import (
     GameLogSchema,
     PlayerSchema,
@@ -30,6 +31,17 @@ LIVE_TIMEOUT = 6
 LIVE_MAX_RETRIES = 1
 
 
+def _proxy_kwargs() -> dict:
+    """Returns {'proxy': STATS_PROXY} when configured, else empty dict.
+
+    nba_api's stats endpoints accept a `proxy` kwarg (a single URL string).
+    On Railway/cloud, stats.nba.com routinely blocks datacenter IPs; routing
+    via a residential proxy works around this. Set the STATS_PROXY env var
+    (e.g. http://user:pass@host:port) to enable. If unset, calls go direct.
+    """
+    return {"proxy": STATS_PROXY} if STATS_PROXY else {}
+
+
 def _with_retry(fn: Callable, *args, max_retries: int = MAX_RETRIES, **kwargs) -> Any:
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
@@ -48,6 +60,7 @@ def _fetch_pbp_df(game_id: str) -> pd.DataFrame:
         return PlayByPlayV3(
             game_id=game_id,
             timeout=DEFAULT_TIMEOUT,
+            **_proxy_kwargs(),
         ).get_data_frames()[0]
 
     return _with_retry(_fetch)
@@ -89,6 +102,7 @@ class NbaService:
                 player_id=player_id,
                 season=season,
                 timeout=timeout,
+                **_proxy_kwargs(),
             ).get_data_frames()[0]
 
         df: pd.DataFrame = _with_retry(_fetch, max_retries=max_retries)

@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,13 +26,14 @@ from src.schemas.nba_schemas import (
     PointsByPeriodSchema,
 )
 from src.cache.live_games_cache import InMemoryLiveGamesCache
-from src.config import ALLOWED_ORIGINS, ENABLE_LIVE_WORKER, LIVE_POLL_INTERVAL_MS
+from src.config import ALLOWED_ORIGINS, ENABLE_LIVE_WORKER, LIVE_POLL_INTERVAL_MS, STATS_PROXY
 from src.services.anomaly_service import AnomalyService
 from src.services.live_analysis_service import LiveAnalysisService
 from src.services.live_game_service import LiveGameService
 from src.services.nba_service import NbaService
 from src.services.player_analysis_service import PlayerAnalysisService
 from src.workers.live_games_worker import start_live_games_worker
+from src.workers.season_cache_warmer import start_season_cache_warmer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +55,14 @@ MAX_LAST_GAMES = 20
 DEFAULT_SEASON = "2024-25"
 
 
+def _current_season() -> str:
+    """NBA season runs Oct→Jun. Returns format 'YYYY-YY' (e.g. '2025-26')."""
+    now = datetime.now()
+    if now.month >= 10:
+        return f"{now.year}-{str(now.year + 1)[-2:]}"
+    return f"{now.year - 1}-{str(now.year)[-2:]}"
+
+
 # ------------------------------------------------------------------ #
 # App lifespan (startup / shutdown)                                   #
 # ------------------------------------------------------------------ #
@@ -64,6 +74,14 @@ async def lifespan(app: FastAPI):
             cache=live_cache,
             fetch_fn=live_game.fetch_scoreboard,
             interval_ms=LIVE_POLL_INTERVAL_MS,
+        )
+        # Pre-warm season averages so user requests don't depend on
+        # stats.nba.com being available right that second.
+        await start_season_cache_warmer(
+            live_cache=live_cache,
+            live_game=live_game,
+            live_analysis=live_analysis,
+            season=_current_season(),
         )
     else:
         logging.getLogger(__name__).info("Live games worker disabled (ENABLE_LIVE_WORKER=false).")
@@ -110,6 +128,57 @@ def _last_games_query() -> int:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/debug/nba-stats")
+def debug_nba_stats():
+    """
+    Quick diagnostic: hits stats.nba.com directly with browser-like headers.
+
+    Use this to confirm whether the current host (e.g. Railway) is being
+    blocked. If status != 200 here but works locally, stats.nba.com is
+    blocking the cloud IP — set STATS_PROXY to route through a residential
+    proxy.
+    """
+    import time
+    import requests
+
+    url = "https://stats.nba.com/stats/playergamelog"
+    params = {"PlayerID": "2544", "Season": "2024-25", "SeasonType": "Regular Season"}
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        ),
+        "Referer": "https://www.nba.com/",
+        "Origin": "https://www.nba.com",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+        "x-nba-stats-origin": "stats",
+        "x-nba-stats-token": "true",
+    }
+    proxies = {"http": STATS_PROXY, "https": STATS_PROXY} if STATS_PROXY else None
+
+    started = time.monotonic()
+    try:
+        r = requests.get(url, params=params, headers=headers, proxies=proxies, timeout=15)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "status": r.status_code,
+            "elapsed_ms": elapsed_ms,
+            "via_proxy": bool(STATS_PROXY),
+            "body_preview": r.text[:300],
+        }
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "status": "error",
+            "elapsed_ms": elapsed_ms,
+            "via_proxy": bool(STATS_PROXY),
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
 
 
 @app.get("/live/cache/status")
