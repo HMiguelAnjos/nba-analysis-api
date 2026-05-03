@@ -3,10 +3,42 @@ import time
 from typing import Any, Callable
 
 import pandas as pd
+import requests
+import urllib3
 from nba_api.stats.endpoints import PlayerGameLog, PlayByPlayV3
 from nba_api.stats.static import players
 
 from src.config import STATS_PROXY
+
+
+# When STATS_PROXY is configured (e.g. ScraperAPI), the proxy itself does
+# its own TLS termination and presents a non-public certificate, so the
+# client *must* skip verification. Without this, any HTTPS call through
+# the proxy fails with SSLError (CERTIFICATE_VERIFY_FAILED). Patch is
+# applied once at import time and only when a proxy is in use.
+def _disable_ssl_verification_for_proxy() -> None:
+    """Make every requests.Session.request default to verify=False.
+
+    This affects all outbound HTTPS in this process, which is acceptable
+    in our context: we don't accept user-controlled target URLs, and the
+    cdn.nba.com paths still benefit from the proxy operator's TLS
+    handling. The InsecureRequestWarning spam is silenced too.
+    """
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    _orig_request = requests.Session.request
+
+    def _patched_request(self, method, url, **kwargs):
+        kwargs.setdefault("verify", False)
+        return _orig_request(self, method, url, **kwargs)
+
+    requests.Session.request = _patched_request
+
+
+if STATS_PROXY:
+    _disable_ssl_verification_for_proxy()
+    logging.getLogger(__name__).info(
+        "STATS_PROXY detected — SSL verification disabled for proxied requests."
+    )
 from src.schemas.nba_schemas import (
     GameLogSchema,
     PlayerSchema,

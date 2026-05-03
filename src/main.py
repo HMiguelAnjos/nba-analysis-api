@@ -160,14 +160,22 @@ def debug_nba_stats():
     }
     proxies = {"http": STATS_PROXY, "https": STATS_PROXY} if STATS_PROXY else None
 
+    # ScraperAPI and similar proxies do their own TLS termination, so we
+    # must skip cert verification when proxying — otherwise SSLError.
+    verify_ssl = not bool(STATS_PROXY)
+
     started = time.monotonic()
     try:
-        r = requests.get(url, params=params, headers=headers, proxies=proxies, timeout=15)
+        r = requests.get(
+            url, params=params, headers=headers, proxies=proxies,
+            timeout=15, verify=verify_ssl,
+        )
         elapsed_ms = int((time.monotonic() - started) * 1000)
         return {
             "status": r.status_code,
             "elapsed_ms": elapsed_ms,
             "via_proxy": bool(STATS_PROXY),
+            "ssl_verified": verify_ssl,
             "body_preview": r.text[:300],
         }
     except Exception as exc:
