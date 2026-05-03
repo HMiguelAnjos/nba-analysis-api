@@ -42,6 +42,32 @@ def _proxy_kwargs() -> dict:
     return {"proxy": STATS_PROXY} if STATS_PROXY else {}
 
 
+# nba_api 1.5.x already sends Chrome User-Agent + Referer, but misses the
+# NBA-specific tokens that nba.com's own frontend includes. Adding them makes
+# the request indistinguishable from a real browser session on the site.
+_ENHANCED_HEADERS = {
+    "Host": "stats.nba.com",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Origin": "https://www.nba.com",
+    "Referer": "https://www.nba.com/",
+    "x-nba-stats-origin": "stats",
+    "x-nba-stats-token": "true",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "Pragma": "no-cache",
+    "Cache-Control": "no-cache",
+}
+
+
 def _with_retry(fn: Callable, *args, max_retries: int = MAX_RETRIES, **kwargs) -> Any:
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
@@ -60,6 +86,7 @@ def _fetch_pbp_df(game_id: str) -> pd.DataFrame:
         return PlayByPlayV3(
             game_id=game_id,
             timeout=DEFAULT_TIMEOUT,
+            headers=_ENHANCED_HEADERS,
             **_proxy_kwargs(),
         ).get_data_frames()[0]
 
@@ -102,6 +129,7 @@ class NbaService:
                 player_id=player_id,
                 season=season,
                 timeout=timeout,
+                headers=_ENHANCED_HEADERS,
                 **_proxy_kwargs(),
             ).get_data_frames()[0]
 
