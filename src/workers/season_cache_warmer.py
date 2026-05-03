@@ -44,7 +44,7 @@ async def start_season_cache_warmer(
     live_game: LiveGameService,
     live_analysis: LiveAnalysisService,
     season: str,
-    warm_interval_s: int = 1800,    # 30 min
+    warm_interval_s: int = 21_600,  # 6 h — cache TTL is 24 h, no need to re-warm more often
     initial_delay_s: int = 30,      # let live games worker populate first
 ) -> None:
     """Launch the warmer as a long-running asyncio task. Call once on startup."""
