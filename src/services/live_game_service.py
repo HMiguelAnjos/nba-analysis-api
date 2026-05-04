@@ -41,6 +41,7 @@ def _parse_player(p: dict) -> Optional[LivePlayerStatsSchema]:
         free_throws_made=int(stats.get("freeThrowsMade", 0)),
         free_throws_attempted=int(stats.get("freeThrowsAttempted", 0)),
         plus_minus=int(stats.get("plusMinusPoints", 0)),
+        fouls=int(stats.get("foulsPersonal", 0)),
     )
 
 

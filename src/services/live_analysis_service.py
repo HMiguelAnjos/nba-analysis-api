@@ -156,6 +156,7 @@ class LiveAnalysisService:
             name=player.name,
             team=team_tricode,
             minutes=player.minutes,
+            fouls=player.fouls,
             current=LiveCurrentStatsSchema(
                 points=player.points,
                 rebounds=player.rebounds,
@@ -313,11 +314,80 @@ class LiveAnalysisService:
         return round((alpha * current_ppm + (1.0 - alpha) * season_ppm) * avg_minutes, 1)
 
     @staticmethod
+    def _compute_game_context(
+        period: int, clock: str, home_score: int, away_score: int
+    ) -> dict:
+        """
+        Calcula contexto do jogo usado pra ajustar a projeção.
+
+        Retorna:
+        - period (int)            — período atual (1..4 OT=5+)
+        - score_diff (int)        — diferença absoluta de placar
+        - minutes_elapsed (float) — minutos decorridos no jogo (clamp >=0.1)
+        - blowout_severity (float in [0,1]) — quão provável é o garbage time:
+            * 0.0 → jogo normal/disputado
+            * 0.5 → Q4 com 10+ pts de diferença (estrela pode sair antes)
+            * 0.7 → Q3+ com 20+ (técnico já considerando descansar titulares)
+            * 1.0 → Q4 com 15+ (banco assumindo, estrelas saem)
+        """
+        try:
+            if ":" in clock:
+                mm, ss = clock.split(":")
+                clock_minutes_remaining = int(mm) + int(ss) / 60.0
+            else:
+                clock_minutes_remaining = 12.0
+        except (ValueError, AttributeError):
+            clock_minutes_remaining = 12.0
+
+        period_clamped = max(period, 1)
+        minutes_elapsed = (period_clamped - 1) * 12 + (12 - clock_minutes_remaining)
+        minutes_elapsed = max(minutes_elapsed, 0.1)
+        score_diff = abs(home_score - away_score)
+
+        # Blowout: thresholds calibrados pra padrão NBA. Q3 com 20+ já
+        # sinaliza intenção de descanso; Q4 com 15+ é praticamente garantido.
+        blowout_severity = 0.0
+        if period_clamped >= 4 and score_diff >= 15:
+            blowout_severity = 1.0
+        elif period_clamped >= 3 and score_diff >= 20:
+            blowout_severity = 0.7
+        elif period_clamped >= 4 and score_diff >= 10:
+            blowout_severity = 0.5
+
+        # Pace: ritmo do jogo vs média NBA (~220 pts totais).
+        # Shootout (240+) = ritmo continua quente; jogo lento (200-) = cai.
+        # Em Q1 cedo o sample é ruim demais — peso menor pra evitar overreact.
+        # Clamp em [0.92, 1.08]: ajuste sutil, não mexe muito na projeção.
+        total_pts = home_score + away_score
+        if minutes_elapsed >= 6.0:  # precisa pelo menos meio quarto pra dar significado
+            projected_total = (total_pts / minutes_elapsed) * 48.0
+            raw_factor = projected_total / 220.0
+            # Confiança cresce com tempo de jogo: peso vai de 0.5 (6 min) a 1.0 (24+ min)
+            pace_confidence = min((minutes_elapsed - 6.0) / 18.0 + 0.5, 1.0)
+            # Ajuste suavizado pela confiança
+            pace_factor = 1.0 + (raw_factor - 1.0) * pace_confidence
+            pace_factor = max(0.92, min(pace_factor, 1.08))
+        else:
+            pace_factor = 1.0
+
+        return {
+            "period": period_clamped,
+            "score_diff": score_diff,
+            "minutes_elapsed": minutes_elapsed,
+            "blowout_severity": blowout_severity,
+            "pace_factor": pace_factor,
+        }
+
+    @staticmethod
     def _project_to_end(
         stat: int,
         minutes: float,
         avg_stat: float,
         avg_minutes: float,
+        fouls: int = 0,
+        period: int = 1,
+        blowout_severity: float = 0.0,
+        pace_factor: float = 1.0,
     ) -> tuple[float, float, float]:
         """
         Projeção até o FIM DO JOGO com margem de erro (low, expected, high).
@@ -348,15 +418,34 @@ class LiveAnalysisService:
 
         target_minutes = avg_minutes if avg_minutes > 0 else 32.0
 
-        # Já passou da média de minutos — assume que está perto de sair.
-        # Não extrapola, retorna o atual com margem mínima.
+        # ── Ajustes de contexto ──────────────────────────────────────────
+        # Reduzem target_minutes (jogador joga MENOS do que o típico)
+        # e/ou blended_rate (joga mais conservador/cansado).
+
+        # Blowout: corta até 20% dos minutos esperados quando vai pro garbage.
+        if blowout_severity > 0:
+            target_minutes *= (1.0 - 0.20 * blowout_severity)
+
+        # Foul trouble: 5+ faltas = alto risco de banco/foul out;
+        # 4 em <=Q3 = técnico costuma proteger o jogador.
+        foul_rate_factor = 1.0
+        if fouls >= 5:
+            target_minutes *= 0.85
+            foul_rate_factor = 0.90  # joga mais defensivo, menos agressivo
+        elif fouls >= 4 and period <= 3:
+            target_minutes *= 0.92
+            foul_rate_factor = 0.95
+
+        # Já passou da média de minutos (após ajustes) — assume que está perto
+        # de sair. Não extrapola, retorna o atual com margem mínima.
         if minutes >= target_minutes:
             base = float(stat)
             margin = base * 0.05
             return (round(base - margin, 1), round(base, 1), round(base + margin, 1))
 
         current_rate = stat / minutes
-        season_rate = avg_stat / target_minutes if avg_stat > 0 else current_rate
+        season_target = avg_minutes if avg_minutes > 0 else 32.0
+        season_rate = avg_stat / season_target if avg_stat > 0 else current_rate
 
         # Peso da temporada: 25% no início, cai pra 10% após ~10 min.
         # Estabiliza projeção em sample pequena sem sufocar a leitura do jogo.
@@ -364,16 +453,30 @@ class LiveAnalysisService:
         season_weight = 0.25 - (0.15 * sample_factor)
         blended_rate = (1.0 - season_weight) * current_rate + season_weight * season_rate
 
-        remaining = target_minutes - minutes
+        # Foul trouble afeta também o ritmo (joga menos agressivo).
+        blended_rate *= foul_rate_factor
+
+        # Pace do jogo: ajusta a expectativa de produção futura assumindo que
+        # a tendência de ritmo do jogo (rápido/lento) tende a continuar.
+        # pace_factor já vem clamped em [0.92, 1.08], então é um ajuste sutil.
+        blended_rate *= pace_factor
+
+        remaining = max(target_minutes - minutes, 0.0)
         expected = stat + blended_rate * remaining
 
         # Margem ±: 15% no começo → 5% no fim. Reflete que predições ficam
         # mais certeiras conforme o jogo desenrola.
-        progress = minutes / target_minutes
+        progress = minutes / max(target_minutes, 1.0)
         uncertainty = max(0.15 * (1.0 - progress), 0.05)
+
+        # Foul trouble OU blowout aumentam a incerteza — o desfecho do tempo
+        # de quadra fica menos previsível.
+        if fouls >= 4 or blowout_severity > 0.4:
+            uncertainty = min(uncertainty + 0.05, 0.20)
+
         margin = expected * uncertainty
 
-        # Low não pode ficar abaixo do que ele já tem — não pode "desfazer" pontos.
+        # Low não pode ficar abaixo do que ele já tem — não dá pra "desfazer" stats.
         low = max(float(stat), expected - margin)
         high = expected + margin
 
@@ -386,6 +489,27 @@ class LiveAnalysisService:
         analyzed, _ = self._analyze_boxscore(bs, season)
 
         ranking = sorted(analyzed, key=lambda p: p.score, reverse=True)[:limit]
+
+        # Contexto do jogo é o mesmo pra todos os jogadores deste game.
+        ctx = self._compute_game_context(
+            bs.period, bs.clock, bs.home_team.score, bs.away_team.score
+        )
+        blowout_risk = ctx["blowout_severity"] > 0.0
+
+        def _proj(stat: int, minutes: float, avg_stat: float, avg_minutes: float, fouls: int):
+            """Wrapper que aplica fouls + contexto do jogo na projeção."""
+            return PaceProjectionSchema(
+                **dict(zip(
+                    ("low", "expected", "high"),
+                    self._project_to_end(
+                        stat, minutes, avg_stat, avg_minutes,
+                        fouls=fouls,
+                        period=ctx["period"],
+                        blowout_severity=ctx["blowout_severity"],
+                        pace_factor=ctx["pace_factor"],
+                    ),
+                ))
+            )
 
         return HotRankingSchema(
             game_id=game_id,
@@ -417,27 +541,21 @@ class LiveAnalysisService:
                         p.current.rebounds, p.minutes,
                         p.season_average.rebounds, p.season_average.minutes,
                     ),
-                    pace_projection_points=PaceProjectionSchema(
-                        **dict(zip(("low", "expected", "high"),
-                                   self._project_to_end(
-                                       p.current.points, p.minutes,
-                                       p.season_average.points, p.season_average.minutes,
-                                   )))
+                    pace_projection_points=_proj(
+                        p.current.points, p.minutes,
+                        p.season_average.points, p.season_average.minutes, p.fouls,
                     ),
-                    pace_projection_assists=PaceProjectionSchema(
-                        **dict(zip(("low", "expected", "high"),
-                                   self._project_to_end(
-                                       p.current.assists, p.minutes,
-                                       p.season_average.assists, p.season_average.minutes,
-                                   )))
+                    pace_projection_assists=_proj(
+                        p.current.assists, p.minutes,
+                        p.season_average.assists, p.season_average.minutes, p.fouls,
                     ),
-                    pace_projection_rebounds=PaceProjectionSchema(
-                        **dict(zip(("low", "expected", "high"),
-                                   self._project_to_end(
-                                       p.current.rebounds, p.minutes,
-                                       p.season_average.rebounds, p.season_average.minutes,
-                                   )))
+                    pace_projection_rebounds=_proj(
+                        p.current.rebounds, p.minutes,
+                        p.season_average.rebounds, p.season_average.minutes, p.fouls,
                     ),
+                    fouls=p.fouls,
+                    foul_trouble=p.fouls >= 4,
+                    blowout_risk=blowout_risk,
                     shooting_impact=p.shooting_impact,
                     status=p.status,
                     score=p.score,

@@ -42,6 +42,7 @@ class LivePlayerStatsSchema(BaseModel):
     free_throws_made: int
     free_throws_attempted: int
     plus_minus: int
+    fouls: int
 
 
 class LiveTeamBoxscoreSchema(BaseModel):
@@ -119,6 +120,7 @@ class LivePlayerAnalysisSchema(BaseModel):
     name: str
     team: str
     minutes: float
+    fouls: int
     current: LiveCurrentStatsSchema
     season_average: LiveSeasonAverageSchema
     expected_until_now: LiveExpectedStatsSchema
@@ -195,6 +197,10 @@ class HotRankingPlayerSchema(BaseModel):
     pace_projection_points: PaceProjectionSchema
     pace_projection_assists: PaceProjectionSchema
     pace_projection_rebounds: PaceProjectionSchema
+    # Contexto que altera a projeção (ajustes já aplicados em pace_projection_*)
+    fouls: int
+    foul_trouble: bool          # 4+ faltas com risco real de banco
+    blowout_risk: bool          # placar aberto, estrela tende a sentar
     shooting_impact: float
     status: str
     score: float
