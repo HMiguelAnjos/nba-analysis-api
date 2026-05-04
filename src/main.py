@@ -130,6 +130,41 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/debug/server-ip")
+def server_ip():
+    """Retorna o IP público do servidor (Railway). Use para configurar whitelist de proxy."""
+    import requests as req
+    try:
+        r = req.get("https://api.ipify.org?format=json", timeout=5)
+        return r.json()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/debug/proxy-test")
+def proxy_test():
+    """Testa o proxy em HTTP e HTTPS separadamente para diagnosticar problemas de tunneling."""
+    import requests as req
+    proxies = {"http": STATS_PROXY, "https": STATS_PROXY} if STATS_PROXY else None
+    results = {"proxy_configured": bool(STATS_PROXY)}
+
+    # Teste 1: HTTP simples pelo proxy (sem CONNECT tunneling)
+    try:
+        r = req.get("http://httpbin.org/ip", proxies=proxies, timeout=10, verify=False)
+        results["http_test"] = {"status": r.status_code, "body": r.json()}
+    except Exception as exc:
+        results["http_test"] = {"error": type(exc).__name__, "detail": str(exc)}
+
+    # Teste 2: HTTPS pelo proxy (requer CONNECT tunneling)
+    try:
+        r = req.get("https://httpbin.org/ip", proxies=proxies, timeout=10, verify=False)
+        results["https_test"] = {"status": r.status_code, "body": r.json()}
+    except Exception as exc:
+        results["https_test"] = {"error": type(exc).__name__, "detail": str(exc)}
+
+    return results
+
+
 @app.get("/debug/nba-stats")
 def debug_nba_stats():
     """
@@ -160,9 +195,10 @@ def debug_nba_stats():
     }
     proxies = {"http": STATS_PROXY, "https": STATS_PROXY} if STATS_PROXY else None
 
-    # ScraperAPI and similar proxies do their own TLS termination, so we
-    # must skip cert verification when proxying — otherwise SSLError.
-    verify_ssl = not bool(STATS_PROXY)
+    # ScraperAPI terminates TLS itself — must skip cert verification.
+    # Other proxies (Webshare residential, etc.) use CONNECT tunneling
+    # and work fine with normal SSL verification.
+    verify_ssl = not (STATS_PROXY and "scraperapi" in STATS_PROXY.lower())
 
     started = time.monotonic()
     try:

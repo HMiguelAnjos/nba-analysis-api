@@ -34,10 +34,20 @@ def _disable_ssl_verification_for_proxy() -> None:
     requests.Session.request = _patched_request
 
 
-if STATS_PROXY:
+# ScraperAPI terminates TLS itself and presents its own certificate, so
+# SSL verification must be disabled when routing through it. Other proxies
+# (e.g. Webshare residential) use standard CONNECT tunneling and do NOT
+# need this — applying it there breaks the connection.
+_PROXY_NEEDS_SSL_BYPASS = STATS_PROXY and "scraperapi" in STATS_PROXY.lower()
+
+if _PROXY_NEEDS_SSL_BYPASS:
     _disable_ssl_verification_for_proxy()
     logging.getLogger(__name__).info(
-        "STATS_PROXY detected — SSL verification disabled for proxied requests."
+        "ScraperAPI proxy detected — SSL verification disabled."
+    )
+elif STATS_PROXY:
+    logging.getLogger(__name__).info(
+        "STATS_PROXY detected (non-ScraperAPI) — SSL verification kept enabled."
     )
 from src.schemas.nba_schemas import (
     GameLogSchema,
