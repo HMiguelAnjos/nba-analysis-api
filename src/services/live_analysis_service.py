@@ -157,6 +157,7 @@ class LiveAnalysisService:
             team=team_tricode,
             minutes=player.minutes,
             fouls=player.fouls,
+            on_court=player.on_court,
             current=LiveCurrentStatsSchema(
                 points=player.points,
                 rebounds=player.rebounds,
@@ -613,6 +614,7 @@ class LiveAnalysisService:
                     fouls=p.fouls,
                     foul_trouble=p.fouls >= 4,
                     blowout_risk=blowout_risk,
+                    on_court=p.on_court,
                     shooting_impact=p.shooting_impact,
                     status=p.status,
                     score=p.score,

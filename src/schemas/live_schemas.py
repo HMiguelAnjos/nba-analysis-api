@@ -43,6 +43,7 @@ class LivePlayerStatsSchema(BaseModel):
     free_throws_attempted: int
     plus_minus: int
     fouls: int
+    on_court: bool
 
 
 class LiveTeamBoxscoreSchema(BaseModel):
@@ -121,6 +122,7 @@ class LivePlayerAnalysisSchema(BaseModel):
     team: str
     minutes: float
     fouls: int
+    on_court: bool
     current: LiveCurrentStatsSchema
     season_average: LiveSeasonAverageSchema
     expected_until_now: LiveExpectedStatsSchema
@@ -201,6 +203,7 @@ class HotRankingPlayerSchema(BaseModel):
     fouls: int
     foul_trouble: bool          # 4+ faltas com risco real de banco
     blowout_risk: bool          # placar aberto, estrela tende a sentar
+    on_court: bool              # se está em quadra AGORA (vs descansando no banco)
     shooting_impact: float
     status: str
     score: float

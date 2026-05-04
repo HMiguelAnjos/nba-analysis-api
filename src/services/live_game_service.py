@@ -42,6 +42,10 @@ def _parse_player(p: dict) -> Optional[LivePlayerStatsSchema]:
         free_throws_attempted=int(stats.get("freeThrowsAttempted", 0)),
         plus_minus=int(stats.get("plusMinusPoints", 0)),
         fouls=int(stats.get("foulsPersonal", 0)),
+        # 'oncourt' vem como string "1"/"0" (às vezes "0" mesmo entre jogadas).
+        # Default True quando o campo está ausente — evita marcar metade do
+        # boxscore como "no banco" se a NBA mudar o nome do campo.
+        on_court=str(p.get("oncourt", "1")) == "1",
     )
 
 
