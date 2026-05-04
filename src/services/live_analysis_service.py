@@ -314,8 +314,26 @@ class LiveAnalysisService:
         return round((alpha * current_ppm + (1.0 - alpha) * season_ppm) * avg_minutes, 1)
 
     @staticmethod
+    def _is_playoff_game(game_id: str) -> bool:
+        """
+        NBA game IDs seguem padrão '00<TT><Y><NNNNN>' onde TT identifica o tipo:
+            01 = Preseason   02 = Regular Season
+            03 = All-Star    04 = Playoffs
+            05 = Play-in
+        Em playoffs, blowout praticamente não rola — técnicos mantêm titulares
+        mesmo com grande vantagem (medo de virada, fechamento de série, etc.).
+        """
+        if not game_id or len(game_id) < 4:
+            return False
+        return game_id[2:4] == "04"
+
+    @staticmethod
     def _compute_game_context(
-        period: int, clock: str, home_score: int, away_score: int
+        period: int,
+        clock: str,
+        home_score: int,
+        away_score: int,
+        consider_blowout: bool = True,
     ) -> dict:
         """
         Calcula contexto do jogo usado pra ajustar a projeção.
@@ -346,13 +364,16 @@ class LiveAnalysisService:
 
         # Blowout: thresholds calibrados pra padrão NBA. Q3 com 20+ já
         # sinaliza intenção de descanso; Q4 com 15+ é praticamente garantido.
+        # Em jogos sem blowout (playoffs, decisão de série, etc.) o usuário
+        # desativa via flag — todos os jogadores ficam sem ajuste de garbage.
         blowout_severity = 0.0
-        if period_clamped >= 4 and score_diff >= 15:
-            blowout_severity = 1.0
-        elif period_clamped >= 3 and score_diff >= 20:
-            blowout_severity = 0.7
-        elif period_clamped >= 4 and score_diff >= 10:
-            blowout_severity = 0.5
+        if consider_blowout:
+            if period_clamped >= 4 and score_diff >= 15:
+                blowout_severity = 1.0
+            elif period_clamped >= 3 and score_diff >= 20:
+                blowout_severity = 0.7
+            elif period_clamped >= 4 and score_diff >= 10:
+                blowout_severity = 0.5
 
         # Pace: ritmo do jogo vs média NBA (~220 pts totais).
         # Shootout (240+) = ritmo continua quente; jogo lento (200-) = cai.
@@ -502,16 +523,32 @@ class LiveAnalysisService:
         return (round(low, 1), round(expected, 1), round(high, 1))
 
     def get_hot_ranking(
-        self, game_id: str, season: str, limit: int
+        self,
+        game_id: str,
+        season: str,
+        limit: int,
+        consider_blowout: Optional[bool] = None,
     ) -> HotRankingSchema:
+        """
+        consider_blowout:
+          - None (padrão): auto-detecta. Playoffs = False, resto = True.
+          - True/False: override explícito do usuário (UI manda quando o
+            usuário liga/desliga o toggle de blowout).
+        """
         bs = self.live.get_live_boxscore(game_id)
         analyzed, _ = self._analyze_boxscore(bs, season)
 
         ranking = sorted(analyzed, key=lambda p: p.score, reverse=True)[:limit]
 
+        # Auto-detecção: jogos de playoff ignoram blowout por padrão.
+        if consider_blowout is None:
+            consider_blowout = not self._is_playoff_game(game_id)
+
         # Contexto do jogo é o mesmo pra todos os jogadores deste game.
         ctx = self._compute_game_context(
-            bs.period, bs.clock, bs.home_team.score, bs.away_team.score
+            bs.period, bs.clock,
+            bs.home_team.score, bs.away_team.score,
+            consider_blowout=consider_blowout,
         )
         blowout_risk = ctx["blowout_severity"] > 0.0
 

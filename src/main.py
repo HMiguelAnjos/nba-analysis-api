@@ -440,9 +440,19 @@ def live_hot_ranking(
     game_id: str,
     season: str = _season_query(),
     limit: int = Query(5, ge=1, le=50, description="Quantidade de jogadores no ranking"),
+    consider_blowout: bool | None = Query(
+        None,
+        description=(
+            "Considerar ajuste de blowout na projeção. "
+            "Padrão: auto-detecta (playoffs=False, resto=True). "
+            "Use True/False para forçar."
+        ),
+    ),
 ):
     try:
-        return live_analysis.get_hot_ranking(game_id, season, limit)
+        return live_analysis.get_hot_ranking(
+            game_id, season, limit, consider_blowout=consider_blowout
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
