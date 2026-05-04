@@ -370,12 +370,17 @@ class LiveAnalysisService:
         else:
             pace_factor = 1.0
 
+        # Minutos restantes reais do jogo (considera OT: cada prorrogação = 5 min).
+        total_game_minutes = 48.0 if period_clamped <= 4 else 48.0 + (period_clamped - 4) * 5.0
+        game_minutes_remaining = max(total_game_minutes - minutes_elapsed, 0.0)
+
         return {
             "period": period_clamped,
             "score_diff": score_diff,
             "minutes_elapsed": minutes_elapsed,
             "blowout_severity": blowout_severity,
             "pace_factor": pace_factor,
+            "game_minutes_remaining": game_minutes_remaining,
         }
 
     @staticmethod
@@ -388,6 +393,7 @@ class LiveAnalysisService:
         period: int = 1,
         blowout_severity: float = 0.0,
         pace_factor: float = 1.0,
+        game_minutes_remaining: float = 0.0,
     ) -> tuple[float, float, float]:
         """
         Projeção até o FIM DO JOGO com margem de erro (low, expected, high).
@@ -416,11 +422,22 @@ class LiveAnalysisService:
         if minutes <= 0:
             return (0.0, 0.0, 0.0)
 
-        target_minutes = avg_minutes if avg_minutes > 0 else 32.0
+        base_avg_minutes = avg_minutes if avg_minutes > 0 else 32.0
+        target_minutes = base_avg_minutes
 
-        # ── Ajustes de contexto ──────────────────────────────────────────
-        # Reduzem target_minutes (jogador joga MENOS do que o típico)
-        # e/ou blended_rate (joga mais conservador/cansado).
+        # ── 1. Ajuste de target_minutes pelo tempo real do jogo ──────────
+        # O avg_minutes reflete jogos onde o jogador saiu cedo (blowout,
+        # descanso, lesão). Se o jogo ainda tem tempo, ele provavelmente
+        # vai jogar mais do que a média sugere.
+        # Usamos a fração típica de tempo em quadra (avg/48) pra estimar
+        # quantos minutos adicionais ele ainda vai jogar.
+        if game_minutes_remaining > 0:
+            on_court_fraction = base_avg_minutes / 48.0
+            expected_remaining_by_game = game_minutes_remaining * on_court_fraction
+            # target = max(média, o que ele já jogou + o que o jogo ainda permite)
+            target_minutes = max(target_minutes, minutes + expected_remaining_by_game)
+
+        # ── 2. Redutores de contexto (aplicados após extensão) ───────────
 
         # Blowout: corta até 20% dos minutos esperados quando vai pro garbage.
         if blowout_severity > 0:
@@ -436,41 +453,43 @@ class LiveAnalysisService:
             target_minutes *= 0.92
             foul_rate_factor = 0.95
 
-        # Já passou da média de minutos (após ajustes) — assume que está perto
-        # de sair. Não extrapola, retorna o atual com margem mínima.
+        # Já jogou mais que o target — encerra sem extrapolar.
         if minutes >= target_minutes:
             base = float(stat)
             margin = base * 0.05
             return (round(base - margin, 1), round(base, 1), round(base + margin, 1))
 
         current_rate = stat / minutes
-        season_target = avg_minutes if avg_minutes > 0 else 32.0
-        season_rate = avg_stat / season_target if avg_stat > 0 else current_rate
+        season_rate = avg_stat / base_avg_minutes if avg_stat > 0 else current_rate
 
-        # Peso da temporada: 25% no início, cai pra 10% após ~10 min.
-        # Estabiliza projeção em sample pequena sem sufocar a leitura do jogo.
+        # ── 3. Peso da temporada ─────────────────────────────────────────
+        # Base: 25% no início → 10% após 10 min jogados.
+        # Extra: reduz ainda mais quando o jogador está claramente acima da
+        # média — se ele está 2× o ritmo histórico, a temporada explica menos
+        # o que está acontecendo hoje.
         sample_factor = min(minutes / 10.0, 1.0)
-        season_weight = 0.25 - (0.15 * sample_factor)
+        season_weight = 0.25 - (0.15 * sample_factor)          # 0.10 – 0.25
+        if season_rate > 0 and current_rate > season_rate:
+            hot_ratio = current_rate / season_rate              # ex: 2.4 = 2.4× a média
+            # A cada 0.5× acima da média, reduz 20% do season_weight restante
+            # hot_ratio=1.5 → -20%;  hot_ratio=2.0 → -40%;  hot_ratio=3+ → -80%
+            hot_discount = min((hot_ratio - 1.0) * 0.40, 0.80)
+            season_weight *= (1.0 - hot_discount)
+
         blended_rate = (1.0 - season_weight) * current_rate + season_weight * season_rate
 
-        # Foul trouble afeta também o ritmo (joga menos agressivo).
+        # Foul trouble e pace ajustam o ritmo.
         blended_rate *= foul_rate_factor
-
-        # Pace do jogo: ajusta a expectativa de produção futura assumindo que
-        # a tendência de ritmo do jogo (rápido/lento) tende a continuar.
-        # pace_factor já vem clamped em [0.92, 1.08], então é um ajuste sutil.
         blended_rate *= pace_factor
 
         remaining = max(target_minutes - minutes, 0.0)
         expected = stat + blended_rate * remaining
 
-        # Margem ±: 15% no começo → 5% no fim. Reflete que predições ficam
-        # mais certeiras conforme o jogo desenrola.
+        # ── 4. Margem de incerteza ───────────────────────────────────────
         progress = minutes / max(target_minutes, 1.0)
         uncertainty = max(0.15 * (1.0 - progress), 0.05)
 
-        # Foul trouble OU blowout aumentam a incerteza — o desfecho do tempo
-        # de quadra fica menos previsível.
+        # Foul trouble ou blowout → mais incerteza nos minutos restantes.
         if fouls >= 4 or blowout_severity > 0.4:
             uncertainty = min(uncertainty + 0.05, 0.20)
 
@@ -507,6 +526,7 @@ class LiveAnalysisService:
                         period=ctx["period"],
                         blowout_severity=ctx["blowout_severity"],
                         pace_factor=ctx["pace_factor"],
+                        game_minutes_remaining=ctx["game_minutes_remaining"],
                     ),
                 ))
             )
