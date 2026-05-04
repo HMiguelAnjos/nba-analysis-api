@@ -98,6 +98,11 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    # Aceita qualquer subdomínio do Railway (front em produção,
+    # PR previews, etc.) sem precisar atualizar a env var manualmente.
+    # *.up.railway.app cobre os deploys gerados; *.railway.app cobre
+    # domínios custom mais curtos. Vercel também incluído por garantia.
+    allow_origin_regex=r"https://.*\.(up\.)?railway\.app|https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
