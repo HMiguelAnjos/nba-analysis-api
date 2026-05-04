@@ -166,6 +166,13 @@ class LivePlayerComparisonSchema(BaseModel):
 # Hot ranking                                                         #
 # ------------------------------------------------------------------ #
 
+class PaceProjectionSchema(BaseModel):
+    """Projeção até o fim do jogo com margem de erro."""
+    low: float
+    expected: float
+    high: float
+
+
 class HotRankingPlayerSchema(BaseModel):
     player_id: int
     name: str
@@ -180,9 +187,14 @@ class HotRankingPlayerSchema(BaseModel):
     points_diff: float
     assists_diff: float
     rebounds_diff: float
+    # Projeção BASE blended (mantida para compatibilidade — ritmo atual + temporada)
     projected_points: float
     projected_assists: float
     projected_rebounds: float
+    # Projeção até o fim do jogo com margem de erro (peso alto no ritmo atual)
+    pace_projection_points: PaceProjectionSchema
+    pace_projection_assists: PaceProjectionSchema
+    pace_projection_rebounds: PaceProjectionSchema
     shooting_impact: float
     status: str
     score: float

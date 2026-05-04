@@ -15,6 +15,7 @@ from src.schemas.live_schemas import (
     LivePlayerComparisonSchema,
     LivePlayerStatsSchema,
     LiveSeasonAverageSchema,
+    PaceProjectionSchema,
 )
 from src.services.live_game_service import LiveGameService
 from src.services.player_analysis_service import PlayerAnalysisService
@@ -292,14 +293,15 @@ class LiveAnalysisService:
     @staticmethod
     def _project_game(stat: float, minutes: float, avg_stat: float, avg_minutes: float) -> float:
         """
-        Blended full-game projection for a typical game (avg_minutes).
+        Projeção BASE (blended) para um jogo típico (avg_minutes).
 
-        Answers: "given his current pace, what will he finish with in a
-        normal game for him?" — independent of how many minutes he has
-        already played in this specific game.
+        Mistura o ritmo atual deste jogo com o ritmo histórico da temporada.
+        Conforme o jogador acumula minutos, o peso do ritmo atual cresce
+        (até 60%), mas a temporada nunca some — isso evita que um chute
+        quente de 5 minutos vire previsão absurda.
 
-        Alpha grows 0→0.60 as minutes played approaches avg_minutes,
-        shifting weight from season pace toward current live pace.
+        Responde: "considerando o que ele costuma fazer + como está hoje,
+        quanto deve terminar?"
         """
         if avg_minutes <= 0:
             return round(avg_stat, 1)
@@ -309,6 +311,73 @@ class LiveAnalysisService:
         season_ppm  = avg_stat / avg_minutes
         alpha = min(minutes / avg_minutes, 0.60)
         return round((alpha * current_ppm + (1.0 - alpha) * season_ppm) * avg_minutes, 1)
+
+    @staticmethod
+    def _project_to_end(
+        stat: int,
+        minutes: float,
+        avg_stat: float,
+        avg_minutes: float,
+    ) -> tuple[float, float, float]:
+        """
+        Projeção até o FIM DO JOGO com margem de erro (low, expected, high).
+
+        Mistura ritmo atual (peso ALTO) com ritmo da temporada (peso baixo,
+        ~10-25%) só pra estabilizar quando a amostra ainda é pequena.
+
+        Lógica:
+        - Calcula ritmo atual (stat por minuto deste jogo)
+        - Calcula ritmo da temporada (stat por minuto histórico)
+        - Mistura com peso da temporada decrescente: 25% no início → 10%
+          após ~10 minutos jogados
+        - Estima minutos restantes que ele vai jogar (avg_minutes - minutes,
+          clamp em 0). avg_minutes já incorpora os descansos típicos dele.
+        - Projeta total final = atual + ritmo_misto × restantes
+        - Adiciona margem de erro ±, decrescente conforme o jogo avança:
+          15% no início → 5% perto do fim do jogo
+
+        Edge cases:
+        - minutes <= 0 → retorna (0, 0, 0)
+        - avg_minutes <= 0 → fallback 32 min (média típica NBA)
+        - Já jogou mais que avg_minutes → projeta como atual (sem extrapolar)
+
+        Returns: (low, expected, high) já arredondados para 1 casa.
+        """
+        if minutes <= 0:
+            return (0.0, 0.0, 0.0)
+
+        target_minutes = avg_minutes if avg_minutes > 0 else 32.0
+
+        # Já passou da média de minutos — assume que está perto de sair.
+        # Não extrapola, retorna o atual com margem mínima.
+        if minutes >= target_minutes:
+            base = float(stat)
+            margin = base * 0.05
+            return (round(base - margin, 1), round(base, 1), round(base + margin, 1))
+
+        current_rate = stat / minutes
+        season_rate = avg_stat / target_minutes if avg_stat > 0 else current_rate
+
+        # Peso da temporada: 25% no início, cai pra 10% após ~10 min.
+        # Estabiliza projeção em sample pequena sem sufocar a leitura do jogo.
+        sample_factor = min(minutes / 10.0, 1.0)
+        season_weight = 0.25 - (0.15 * sample_factor)
+        blended_rate = (1.0 - season_weight) * current_rate + season_weight * season_rate
+
+        remaining = target_minutes - minutes
+        expected = stat + blended_rate * remaining
+
+        # Margem ±: 15% no começo → 5% no fim. Reflete que predições ficam
+        # mais certeiras conforme o jogo desenrola.
+        progress = minutes / target_minutes
+        uncertainty = max(0.15 * (1.0 - progress), 0.05)
+        margin = expected * uncertainty
+
+        # Low não pode ficar abaixo do que ele já tem — não pode "desfazer" pontos.
+        low = max(float(stat), expected - margin)
+        high = expected + margin
+
+        return (round(low, 1), round(expected, 1), round(high, 1))
 
     def get_hot_ranking(
         self, game_id: str, season: str, limit: int
@@ -347,6 +416,27 @@ class LiveAnalysisService:
                     projected_rebounds=self._project_game(
                         p.current.rebounds, p.minutes,
                         p.season_average.rebounds, p.season_average.minutes,
+                    ),
+                    pace_projection_points=PaceProjectionSchema(
+                        **dict(zip(("low", "expected", "high"),
+                                   self._project_to_end(
+                                       p.current.points, p.minutes,
+                                       p.season_average.points, p.season_average.minutes,
+                                   )))
+                    ),
+                    pace_projection_assists=PaceProjectionSchema(
+                        **dict(zip(("low", "expected", "high"),
+                                   self._project_to_end(
+                                       p.current.assists, p.minutes,
+                                       p.season_average.assists, p.season_average.minutes,
+                                   )))
+                    ),
+                    pace_projection_rebounds=PaceProjectionSchema(
+                        **dict(zip(("low", "expected", "high"),
+                                   self._project_to_end(
+                                       p.current.rebounds, p.minutes,
+                                       p.season_average.rebounds, p.season_average.minutes,
+                                   )))
                     ),
                     shooting_impact=p.shooting_impact,
                     status=p.status,
