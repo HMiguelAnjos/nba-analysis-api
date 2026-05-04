@@ -13,6 +13,7 @@ from src.schemas.analysis_schemas import (
 )
 from src.schemas.live_schemas import (
     HotRankingSchema,
+    LineupGameSchema,
     LiveBoxscoreSchema,
     LiveGameAnalysisSchema,
     LiveGamesCachedResponseSchema,
@@ -406,6 +407,22 @@ def live_boxscore(game_id: str):
         return live_game.get_live_boxscore(game_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/games/{game_id}/lineups", response_model=LineupGameSchema)
+def lineups(game_id: str):
+    """
+    Elenco completo do jogo: titulares, reservas e inativos pra cada time.
+    Inclui foto, posição, status, motivo de não jogar e nota 0–10 de
+    desempenho. Reaproveita o mesmo cache do boxscore (TTL 15s) — não
+    duplica chamadas à NBA Live API.
+    """
+    try:
+        return live_game.get_lineup(game_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Erro ao montar lineup: {exc}")
 
 
 @app.get("/games/{game_id}/live-analysis", response_model=LiveGameAnalysisSchema)

@@ -4,6 +4,9 @@ from typing import Optional
 from nba_api.live.nba.endpoints import boxscore, scoreboard
 
 from src.schemas.live_schemas import (
+    LineupGameSchema,
+    LineupPlayerSchema,
+    LineupTeamSchema,
     LiveBoxscoreSchema,
     LiveGameSchema,
     LivePlayerStatsSchema,
@@ -12,7 +15,8 @@ from src.schemas.live_schemas import (
     TodayGamesSchema,
 )
 from src.utils.cache import SimpleCache
-from src.utils.stats import rounded
+from src.utils.photos import player_photo_url
+from src.utils.stats import calculate_player_performance_rating, rounded
 from src.utils.time_utils import format_game_clock, map_game_status, parse_minutes_to_float
 
 logger = logging.getLogger(__name__)
@@ -22,6 +26,7 @@ BOXSCORE_TTL = 15     # seconds
 
 
 def _parse_player(p: dict) -> Optional[LivePlayerStatsSchema]:
+    """Parser para análise live (filtra quem não jogou)."""
     stats = p.get("statistics", {})
     minutes = parse_minutes_to_float(stats.get("minutes", "PT00M00.00S"))
     if minutes <= 0:
@@ -34,6 +39,9 @@ def _parse_player(p: dict) -> Optional[LivePlayerStatsSchema]:
         points=int(stats.get("points", 0)),
         rebounds=int(stats.get("reboundsTotal", 0)),
         assists=int(stats.get("assists", 0)),
+        steals=int(stats.get("steals", 0)),
+        blocks=int(stats.get("blocks", 0)),
+        turnovers=int(stats.get("turnovers", 0)),
         field_goals_made=int(stats.get("fieldGoalsMade", 0)),
         field_goals_attempted=int(stats.get("fieldGoalsAttempted", 0)),
         three_pointers_made=int(stats.get("threePointersMade", 0)),
@@ -46,6 +54,125 @@ def _parse_player(p: dict) -> Optional[LivePlayerStatsSchema]:
         # Default True quando o campo está ausente — evita marcar metade do
         # boxscore como "no banco" se a NBA mudar o nome do campo.
         on_court=str(p.get("oncourt", "1")) == "1",
+    )
+
+
+def _parse_lineup_player(p: dict) -> LineupPlayerSchema:
+    """
+    Parser para a aba Lineups.
+
+    Diferenças em relação a `_parse_player`:
+    - NÃO filtra por minutes <= 0 (precisa mostrar reservas que não entraram)
+    - Inclui campos oficiais: starter, played, status, notPlayingReason, jerseyNum
+    - Calcula performance_rating + photo_url
+    """
+    stats = p.get("statistics", {})
+    minutes = parse_minutes_to_float(stats.get("minutes", "PT00M00.00S"))
+    person_id = int(p.get("personId", 0))
+
+    points    = int(stats.get("points", 0))
+    rebounds  = int(stats.get("reboundsTotal", 0))
+    assists   = int(stats.get("assists", 0))
+    steals    = int(stats.get("steals", 0))
+    blocks    = int(stats.get("blocks", 0))
+    turnovers = int(stats.get("turnovers", 0))
+    fouls     = int(stats.get("foulsPersonal", 0))
+    plus_minus = int(stats.get("plusMinusPoints", 0))
+    fgm = int(stats.get("fieldGoalsMade", 0))
+    fga = int(stats.get("fieldGoalsAttempted", 0))
+    tpm = int(stats.get("threePointersMade", 0))
+    tpa = int(stats.get("threePointersAttempted", 0))
+    ftm = int(stats.get("freeThrowsMade", 0))
+    fta = int(stats.get("freeThrowsAttempted", 0))
+
+    rating, label, low_conf = calculate_player_performance_rating(
+        points=points,
+        rebounds=rebounds,
+        assists=assists,
+        steals=steals,
+        blocks=blocks,
+        turnovers=turnovers,
+        fouls=fouls,
+        plus_minus=plus_minus,
+        minutes=minutes,
+        field_goals_made=fgm,
+        field_goals_attempted=fga,
+        three_pointers_made=tpm,
+        free_throws_made=ftm,
+        free_throws_attempted=fta,
+    )
+
+    return LineupPlayerSchema(
+        player_id=person_id,
+        name=p.get("name", ""),
+        jersey_num=str(p.get("jerseyNum", "")),
+        position=p.get("position", "") or "",
+        is_starter=str(p.get("starter", "0")) == "1",
+        is_on_court=str(p.get("oncourt", "0")) == "1",
+        played=str(p.get("played", "0")) == "1",
+        status=str(p.get("status", "ACTIVE")),
+        not_playing_reason=p.get("notPlayingReason"),
+        photo_url=player_photo_url(person_id),
+        minutes=rounded(minutes),
+        points=points,
+        rebounds=rebounds,
+        assists=assists,
+        steals=steals,
+        blocks=blocks,
+        turnovers=turnovers,
+        fouls=fouls,
+        field_goals_made=fgm,
+        field_goals_attempted=fga,
+        three_pointers_made=tpm,
+        three_pointers_attempted=tpa,
+        free_throws_made=ftm,
+        free_throws_attempted=fta,
+        plus_minus=plus_minus,
+        performance_rating=rating,
+        performance_label=label,
+        low_confidence=low_conf,
+    )
+
+
+def _parse_lineup_team(team: dict) -> LineupTeamSchema:
+    """Separa jogadores em starters, bench e inactive."""
+    raw_players = team.get("players", [])
+    parsed = [_parse_lineup_player(p) for p in raw_players]
+
+    starters: list[LineupPlayerSchema] = []
+    bench:    list[LineupPlayerSchema] = []
+    inactive: list[LineupPlayerSchema] = []
+
+    for p in parsed:
+        if p.status != "ACTIVE":
+            inactive.append(p)
+        elif p.is_starter:
+            starters.append(p)
+        else:
+            bench.append(p)
+
+    # Ordenação: starters mantêm ordem da NBA (1..5);
+    # bench ordena por minutos jogados (quem mais joga primeiro);
+    # inactive por nome.
+    bench.sort(key=lambda x: (-x.minutes, x.name))
+    inactive.sort(key=lambda x: x.name)
+
+    if len(starters) != 5:
+        logger.warning(
+            "Time %s tem %d titulares (esperado 5) — boxscore pode estar atrasado",
+            team.get("teamTricode", "?"), len(starters),
+        )
+
+    city = team.get("teamCity", "")
+    name = team.get("teamName", "")
+    return LineupTeamSchema(
+        team_id=int(team.get("teamId", 0)),
+        name=f"{city} {name}".strip(),
+        tricode=team.get("teamTricode", ""),
+        score=int(team.get("score", 0)),
+        starters=starters,
+        bench=bench,
+        inactive=inactive,
     )
 
 
@@ -146,6 +273,51 @@ class LiveGameService:
             clock=format_game_clock(game_data.get("gameClock", "")),
             home_team=_parse_team_boxscore(game_data.get("homeTeam", {})),
             away_team=_parse_team_boxscore(game_data.get("awayTeam", {})),
+        )
+        self._cache.set(cache_key, result, BOXSCORE_TTL)
+        return result
+
+    def _fetch_raw_game_data(self, game_id: str) -> dict:
+        """
+        Cache compartilhado do JSON cru do boxscore (TTL curto).
+        get_live_boxscore e get_lineup consomem o mesmo dado, evitando
+        2 requests à NBA Live API a cada poll.
+        """
+        cache_key = f"raw_boxscore:{game_id}"
+        cached = self._cache.get(cache_key)
+        if cached:
+            return cached
+
+        try:
+            bs = boxscore.BoxScore(game_id=game_id)
+            game_data = bs.get_dict()["game"]
+        except Exception as exc:
+            raise RuntimeError(f"Erro ao buscar boxscore para {game_id}: {exc}") from exc
+
+        self._cache.set(cache_key, game_data, BOXSCORE_TTL)
+        return game_data
+
+    def get_lineup(self, game_id: str) -> LineupGameSchema:
+        """
+        Lineups completas (titulares + reservas + inativos) com foto e
+        nota de desempenho. Tudo direto da NBA Live API — sem inferência.
+        """
+        cache_key = f"lineup:{game_id}"
+        cached = self._cache.get(cache_key)
+        if cached:
+            logger.debug("Lineup %s served from cache", game_id)
+            return cached
+
+        logger.info("Building lineup for game %s", game_id)
+        game_data = self._fetch_raw_game_data(game_id)
+
+        result = LineupGameSchema(
+            game_id=game_id,
+            game_status=map_game_status(game_data.get("gameStatus", 0)),
+            period=int(game_data.get("period", 0)),
+            clock=format_game_clock(game_data.get("gameClock", "")),
+            home_team=_parse_lineup_team(game_data.get("homeTeam", {})),
+            away_team=_parse_lineup_team(game_data.get("awayTeam", {})),
         )
         self._cache.set(cache_key, result, BOXSCORE_TTL)
         return result

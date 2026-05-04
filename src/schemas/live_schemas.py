@@ -38,6 +38,9 @@ class LivePlayerStatsSchema(BaseModel):
     points: int
     rebounds: int
     assists: int
+    steals: int
+    blocks: int
+    turnovers: int
     field_goals_made: int
     field_goals_attempted: int
     three_pointers_made: int
@@ -228,3 +231,61 @@ class LiveGamesCachedResponseSchema(BaseModel):
     updated_at: str          # ISO 8601 UTC
     age_ms: int              # milliseconds since last worker update
     source: Literal["cache"] = "cache"
+
+
+# ------------------------------------------------------------------ #
+# Lineups (titulares/reservas + foto + nota de desempenho)            #
+# ------------------------------------------------------------------ #
+# Diferente do LivePlayerStatsSchema (que filtra quem não jogou e foca
+# em produzir análise), este schema mostra o ELENCO COMPLETO do time —
+# inclusive jogadores inativos, ainda no banco com 0 minutos, etc.
+# Todos os flags vêm direto da NBA Live API (oficial), sem inferência.
+
+class LineupPlayerSchema(BaseModel):
+    player_id: int
+    name: str
+    jersey_num: str
+    position: str                    # "PG", "SG", "SF", "PF", "C" ou ""
+    is_starter: bool                 # NBA: player.starter == "1"
+    is_on_court: bool                # NBA: player.oncourt == "1"
+    played: bool                     # NBA: player.played == "1"
+    status: str                      # "ACTIVE" | "INACTIVE"
+    not_playing_reason: str | None
+    photo_url: str                   # CDN da NBA, sempre 200 (fallback silhueta)
+    minutes: float
+    points: int
+    rebounds: int
+    assists: int
+    steals: int
+    blocks: int
+    turnovers: int
+    fouls: int
+    field_goals_made: int
+    field_goals_attempted: int
+    three_pointers_made: int
+    three_pointers_attempted: int
+    free_throws_made: int
+    free_throws_attempted: int
+    plus_minus: int
+    performance_rating: float        # 0–10
+    performance_label: str           # Excelente | Bom | Regular | Ruim | N/A
+    low_confidence: bool             # True se <10 min jogados
+
+
+class LineupTeamSchema(BaseModel):
+    team_id: int
+    name: str
+    tricode: str
+    score: int
+    starters: list[LineupPlayerSchema]      # 5 jogadores titulares
+    bench: list[LineupPlayerSchema]         # reservas (jogaram OU no banco)
+    inactive: list[LineupPlayerSchema]      # status == INACTIVE
+
+
+class LineupGameSchema(BaseModel):
+    game_id: str
+    game_status: str
+    period: int
+    clock: str
+    home_team: LineupTeamSchema
+    away_team: LineupTeamSchema
