@@ -14,6 +14,9 @@ class LiveGameSchema(BaseModel):
     game_status: str
     period: int
     clock: str
+    # ISO 8601 UTC do início agendado do jogo (ex: "2026-05-04T23:00:00Z").
+    # O front converte pro timezone local do usuário no display.
+    game_time_utc: str | None = None
     home_team: LiveTeamSchema
     away_team: LiveTeamSchema
 

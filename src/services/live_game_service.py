@@ -92,6 +92,10 @@ class LiveGameService:
                     game_status=map_game_status(g.get("gameStatus", 0)),
                     period=int(g.get("period", 0)),
                     clock=format_game_clock(g.get("gameClock", "")),
+                    # gameTimeUTC vem como "2026-05-04T23:00:00Z" no scoreboard
+                    # da NBA Live API. Mantemos como string crua — o front
+                    # formata pro timezone do usuário com Intl.DateTimeFormat.
+                    game_time_utc=g.get("gameTimeUTC") or None,
                     home_team=LiveTeamSchema(
                         team_id=int(home.get("teamId", 0)),
                         name=f"{home.get('teamCity', '')} {home.get('teamName', '')}".strip(),
