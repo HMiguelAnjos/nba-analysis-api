@@ -439,7 +439,7 @@ def live_player_comparison(
 def live_hot_ranking(
     game_id: str,
     season: str = _season_query(),
-    limit: int = Query(5, ge=1, le=20, description="Quantidade de jogadores no ranking"),
+    limit: int = Query(5, ge=1, le=50, description="Quantidade de jogadores no ranking"),
 ):
     try:
         return live_analysis.get_hot_ranking(game_id, season, limit)
