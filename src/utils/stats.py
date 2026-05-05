@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from src.schemas.nba_schemas import GameLogSchema
@@ -121,6 +121,91 @@ def calc_player_status(score: float) -> str:
     if score > -5:
         return "below_average"
     return "cold"
+
+
+# ---------------------------------------------------------------------------
+# Player-level blowout impact
+# ---------------------------------------------------------------------------
+# Distingue o RISCO DO JOGO (blowout %) do IMPACTO SOBRE O JOGADOR.
+# A flag visual no card só faz sentido pra quem realmente PERDE minutos:
+# titulares e jogadores de alta minutagem. Reservas de fim de banco
+# tendem a *ganhar* tempo em garbage time — não deveriam receber alerta.
+
+# Limiar abaixo do qual o blowout do jogo é irrelevante pra QUALQUER jogador.
+_BLOWOUT_GAME_FLOOR_PCT = 30
+
+# Acima desse limiar de minutos, mesmo reserva já é "rotação principal".
+_HIGH_MINUTE_THRESHOLD = 18.0
+
+# Acima desse limiar de minutos pra titular = alta minutagem (impacto severo).
+_STARTER_HIGH_MIN = 22.0
+
+
+def calculate_player_blowout_impact(
+    *,
+    player_minutes: float,
+    is_starter: bool,
+    game_blowout_pct: int,
+    game_blowout_level: str = "low",
+) -> Optional[dict]:
+    """
+    Decide se a flag "Risco de descanso" deve aparecer pro jogador.
+
+    Args:
+        player_minutes: minutos jogados até agora.
+        is_starter: titular oficial (campo `starter` da NBA Live API).
+        game_blowout_pct: 0–100 do jogo.
+        game_blowout_level: 'low' | 'medium' | 'high' | 'final'.
+
+    Returns:
+        dict {applies, level, reason} se a flag DEVE aparecer.
+        None se não — usar sempre que o jogador for fim de banco ou o
+        jogo não estiver perto de blowout.
+
+    Regras (calibradas pelo padrão de rotação NBA):
+    - Jogo finalizado → nunca aplica (não há mais minutos a perder).
+    - Risco do jogo < 30% → ninguém recebe (jogo não está perto de garbage).
+    - Reserva com <18 min → não recebe (esses jogadores GANHAM minutos
+      no garbage time, então o blowout favorece eles).
+    - Titular OU 18+ min → entra no cálculo:
+        * game >= 60 + titular com 22+ min → "high"
+        * game >= 60 outros → "medium"
+        * game >= 45 → "medium"
+        * 30-44 → "low"
+    """
+    if game_blowout_level == "final":
+        return None
+    if game_blowout_pct < _BLOWOUT_GAME_FLOOR_PCT:
+        return None
+
+    is_core_rotation = is_starter or player_minutes >= _HIGH_MINUTE_THRESHOLD
+    if not is_core_rotation:
+        return None  # fim de banco fica de fora — eles GANHAM minutos
+
+    # Player está na rotação + jogo em risco de blowout. Calcula nível.
+    if game_blowout_pct >= 60:
+        if is_starter and player_minutes >= _STARTER_HIGH_MIN:
+            return {
+                "applies": True,
+                "level": "high",
+                "reason": "Titular com alta minutagem — alto risco de ser poupado",
+            }
+        return {
+            "applies": True,
+            "level": "medium",
+            "reason": "Rotação principal — pode perder minutos no garbage time",
+        }
+    if game_blowout_pct >= 45:
+        return {
+            "applies": True,
+            "level": "medium",
+            "reason": "Risco moderado de minutos reduzidos",
+        }
+    return {
+        "applies": True,
+        "level": "low",
+        "reason": "Pequeno risco de descanso antecipado",
+    }
 
 
 # ---------------------------------------------------------------------------

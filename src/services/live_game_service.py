@@ -14,12 +14,14 @@ from src.schemas.live_schemas import (
     LivePlayerStatsSchema,
     LiveTeamBoxscoreSchema,
     LiveTeamSchema,
+    PlayerBlowoutImpactSchema,
     TodayGamesSchema,
 )
 from src.utils.cache import SimpleCache
 from src.utils.photos import player_photo_url
 from src.utils.stats import (
     calculate_blowout_risk,
+    calculate_player_blowout_impact,
     calculate_player_performance_rating,
     rounded,
 )
@@ -41,6 +43,7 @@ def _parse_player(p: dict) -> Optional[LivePlayerStatsSchema]:
         player_id=int(p.get("personId", 0)),
         name=p.get("name", ""),
         position=p.get("position", ""),
+        is_starter=str(p.get("starter", "0")) == "1",
         minutes=rounded(minutes),
         points=int(stats.get("points", 0)),
         rebounds=int(stats.get("reboundsTotal", 0)),
@@ -63,7 +66,11 @@ def _parse_player(p: dict) -> Optional[LivePlayerStatsSchema]:
     )
 
 
-def _parse_lineup_player(p: dict) -> LineupPlayerSchema:
+def _parse_lineup_player(
+    p: dict,
+    game_blowout_pct: int = 0,
+    game_blowout_level: str = "low",
+) -> LineupPlayerSchema:
     """
     Parser para a aba Lineups.
 
@@ -71,6 +78,12 @@ def _parse_lineup_player(p: dict) -> LineupPlayerSchema:
     - NÃO filtra por minutes <= 0 (precisa mostrar reservas que não entraram)
     - Inclui campos oficiais: starter, played, status, notPlayingReason, jerseyNum
     - Calcula performance_rating + photo_url
+    - Calcula blowout_impact por jogador (None se não fizer sentido pra ele)
+
+    Args:
+        p: dict cru do boxscore
+        game_blowout_pct: 0–100 do jogo (já calculado em get_lineup)
+        game_blowout_level: 'low'|'medium'|'high'|'final'
     """
     stats = p.get("statistics", {})
     minutes = parse_minutes_to_float(stats.get("minutes", "PT00M00.00S"))
@@ -108,12 +121,23 @@ def _parse_lineup_player(p: dict) -> LineupPlayerSchema:
         free_throws_attempted=fta,
     )
 
+    is_starter_flag = str(p.get("starter", "0")) == "1"
+    impact_dict = calculate_player_blowout_impact(
+        player_minutes=minutes,
+        is_starter=is_starter_flag,
+        game_blowout_pct=game_blowout_pct,
+        game_blowout_level=game_blowout_level,
+    )
+    blowout_impact_payload = (
+        PlayerBlowoutImpactSchema(**impact_dict) if impact_dict else None
+    )
+
     return LineupPlayerSchema(
         player_id=person_id,
         name=p.get("name", ""),
         jersey_num=str(p.get("jerseyNum", "")),
         position=p.get("position", "") or "",
-        is_starter=str(p.get("starter", "0")) == "1",
+        is_starter=is_starter_flag,
         is_on_court=str(p.get("oncourt", "0")) == "1",
         played=str(p.get("played", "0")) == "1",
         status=str(p.get("status", "ACTIVE")),
@@ -137,13 +161,21 @@ def _parse_lineup_player(p: dict) -> LineupPlayerSchema:
         performance_rating=rating,
         performance_label=label,
         low_confidence=low_conf,
+        blowout_impact=blowout_impact_payload,
     )
 
 
-def _parse_lineup_team(team: dict) -> LineupTeamSchema:
+def _parse_lineup_team(
+    team: dict,
+    game_blowout_pct: int = 0,
+    game_blowout_level: str = "low",
+) -> LineupTeamSchema:
     """Separa jogadores em starters, bench e inactive."""
     raw_players = team.get("players", [])
-    parsed = [_parse_lineup_player(p) for p in raw_players]
+    parsed = [
+        _parse_lineup_player(p, game_blowout_pct, game_blowout_level)
+        for p in raw_players
+    ]
 
     starters: list[LineupPlayerSchema] = []
     bench:    list[LineupPlayerSchema] = []
@@ -320,19 +352,24 @@ class LiveGameService:
         game_status = map_game_status(game_data.get("gameStatus", 0))
         period = int(game_data.get("period", 0))
         clock = format_game_clock(game_data.get("gameClock", ""))
-        home = _parse_lineup_team(game_data.get("homeTeam", {}))
-        away = _parse_lineup_team(game_data.get("awayTeam", {}))
 
-        # Detecta playoff via padrão do game_id (00<TT><Y>...; 04 = playoffs).
+        # Calcula blowout do JOGO primeiro (precisa só dos placares).
+        # Os parsers de team/player recebem esse contexto pra decidir
+        # individualmente quem deveria ganhar a flag de "Risco de descanso".
+        home_score = int(game_data.get("homeTeam", {}).get("score", 0))
+        away_score = int(game_data.get("awayTeam", {}).get("score", 0))
         is_playoff = len(game_id) >= 4 and game_id[2:4] == "04"
         bo_pct, bo_level, bo_reason = calculate_blowout_risk(
             period=period,
             clock=clock,
-            home_score=home.score,
-            away_score=away.score,
+            home_score=home_score,
+            away_score=away_score,
             game_status=game_status,
             is_playoff=is_playoff,
         )
+
+        home = _parse_lineup_team(game_data.get("homeTeam", {}), bo_pct, bo_level)
+        away = _parse_lineup_team(game_data.get("awayTeam", {}), bo_pct, bo_level)
 
         result = LineupGameSchema(
             game_id=game_id,

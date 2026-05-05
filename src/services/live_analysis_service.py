@@ -19,6 +19,7 @@ from src.schemas.live_schemas import (
     LivePlayerStatsSchema,
     LiveSeasonAverageSchema,
     PaceProjectionSchema,
+    PlayerBlowoutImpactSchema,
 )
 from src.services.live_game_service import LiveGameService
 from src.services.player_analysis_service import PlayerAnalysisService
@@ -160,6 +161,7 @@ class LiveAnalysisService:
             team=team_tricode,
             minutes=player.minutes,
             fouls=player.fouls,
+            is_starter=player.is_starter,
             on_court=player.on_court,
             current=LiveCurrentStatsSchema(
                 points=player.points,
@@ -578,10 +580,9 @@ class LiveAnalysisService:
             bs.home_team.score, bs.away_team.score,
             consider_blowout=consider_blowout,
         )
-        blowout_risk_legacy = ctx["blowout_severity"] > 0.0  # flag antiga por jogador
 
         # Risco de blowout (porcentagem qualitativa) — exposto no payload.
-        from src.utils.stats import calculate_blowout_risk
+        from src.utils.stats import calculate_blowout_risk, calculate_player_blowout_impact
         bo_pct, bo_level, bo_reason = calculate_blowout_risk(
             period=bs.period,
             clock=bs.clock,
@@ -593,6 +594,16 @@ class LiveAnalysisService:
         blowout_payload = BlowoutRiskSchema(
             percentage=bo_pct, level=bo_level, reason=bo_reason
         )
+
+        def _impact(player) -> Optional[PlayerBlowoutImpactSchema]:
+            """Calcula impacto do blowout pra ESTE jogador (None = sem flag)."""
+            d = calculate_player_blowout_impact(
+                player_minutes=player.minutes,
+                is_starter=player.is_starter,
+                game_blowout_pct=bo_pct,
+                game_blowout_level=bo_level,
+            )
+            return PlayerBlowoutImpactSchema(**d) if d else None
 
         def _proj(stat: int, minutes: float, avg_stat: float, avg_minutes: float, fouls: int):
             """Wrapper que aplica fouls + contexto do jogo na projeção."""
@@ -655,8 +666,13 @@ class LiveAnalysisService:
                     ),
                     fouls=p.fouls,
                     foul_trouble=p.fouls >= 4,
-                    blowout_risk=blowout_risk_legacy,
+                    blowout_impact=_impact(p),
+                    # blowout_risk legacy: True se houver impact pra ESTE jogador
+                    # (não mais "any blowout risk no jogo"). Mantido pra
+                    # compatibilidade até o front migrar.
+                    blowout_risk=_impact(p) is not None,
                     on_court=p.on_court,
+                    is_starter=p.is_starter,
                     shooting_impact=p.shooting_impact,
                     status=p.status,
                     score=p.score,

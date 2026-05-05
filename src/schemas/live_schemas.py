@@ -34,6 +34,7 @@ class LivePlayerStatsSchema(BaseModel):
     player_id: int
     name: str
     position: str
+    is_starter: bool
     minutes: float
     points: int
     rebounds: int
@@ -128,6 +129,7 @@ class LivePlayerAnalysisSchema(BaseModel):
     team: str
     minutes: float
     fouls: int
+    is_starter: bool
     on_court: bool
     current: LiveCurrentStatsSchema
     season_average: LiveSeasonAverageSchema
@@ -183,6 +185,30 @@ class PaceProjectionSchema(BaseModel):
     high: float
 
 
+class BlowoutRiskSchema(BaseModel):
+    """
+    Probabilidade estimada de garbage time (titulares saindo, banco assumindo).
+    Calculado a partir do contexto do placar + período + tempo restante.
+    `final` é estado especial para jogos encerrados (não há "risco" futuro).
+    """
+    percentage: int                                                # 0–100
+    level: Literal["low", "medium", "high", "final"]
+    reason: str                                                    # explicação curta
+
+
+class PlayerBlowoutImpactSchema(BaseModel):
+    """
+    IMPACTO do blowout sobre um JOGADOR específico.
+    Diferente do risco do jogo: aqui dizemos se ESTE jogador tende a perder
+    minutos. Reservas de fim de banco normalmente NÃO recebem impacto
+    (eles ganham minutos no garbage time). Titulares e jogadores de alta
+    minutagem recebem.
+    """
+    applies: bool                                                  # True → mostrar flag
+    level: Literal["low", "medium", "high"]
+    reason: str
+
+
 class HotRankingPlayerSchema(BaseModel):
     player_id: int
     name: str
@@ -208,22 +234,13 @@ class HotRankingPlayerSchema(BaseModel):
     # Contexto que altera a projeção (ajustes já aplicados em pace_projection_*)
     fouls: int
     foul_trouble: bool          # 4+ faltas com risco real de banco
-    blowout_risk: bool          # placar aberto, estrela tende a sentar
+    blowout_risk: bool          # DEPRECATED: use blowout_impact.applies; mantido pra compat
+    blowout_impact: PlayerBlowoutImpactSchema | None  # None = não mostrar flag
     on_court: bool              # se está em quadra AGORA (vs descansando no banco)
+    is_starter: bool            # titular (campo `starter` da NBA Live API)
     shooting_impact: float
     status: str
     score: float
-
-
-class BlowoutRiskSchema(BaseModel):
-    """
-    Probabilidade estimada de garbage time (titulares saindo, banco assumindo).
-    Calculado a partir do contexto do placar + período + tempo restante.
-    `final` é estado especial para jogos encerrados (não há "risco" futuro).
-    """
-    percentage: int                                                # 0–100
-    level: Literal["low", "medium", "high", "final"]
-    reason: str                                                    # explicação curta
 
 
 class HotRankingSchema(BaseModel):
@@ -290,6 +307,7 @@ class LineupPlayerSchema(BaseModel):
     performance_rating: float        # 0–10
     performance_label: str           # Excelente | Bom | Regular | Ruim | N/A
     low_confidence: bool             # True se <10 min jogados
+    blowout_impact: PlayerBlowoutImpactSchema | None  # None = sem flag
 
 
 class LineupTeamSchema(BaseModel):
