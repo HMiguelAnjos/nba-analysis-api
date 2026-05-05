@@ -163,7 +163,6 @@ def calculate_player_blowout_impact(
         jogo não estiver perto de blowout.
 
     Regras (calibradas pelo padrão de rotação NBA):
-    - Jogo finalizado → nunca aplica (não há mais minutos a perder).
     - Risco do jogo < 30% → ninguém recebe (jogo não está perto de garbage).
     - Reserva com <18 min → não recebe (esses jogadores GANHAM minutos
       no garbage time, então o blowout favorece eles).
@@ -172,9 +171,9 @@ def calculate_player_blowout_impact(
         * game >= 60 outros → "medium"
         * game >= 45 → "medium"
         * 30-44 → "low"
+    - Jogos finalizados (level=='final'): mesma regra, mas usa frase em
+      past-tense ("Foi poupado") em vez de prospectiva ("pode ser poupado").
     """
-    if game_blowout_level == "final":
-        return None
     if game_blowout_pct < _BLOWOUT_GAME_FLOOR_PCT:
         return None
 
@@ -182,29 +181,43 @@ def calculate_player_blowout_impact(
     if not is_core_rotation:
         return None  # fim de banco fica de fora — eles GANHAM minutos
 
-    # Player está na rotação + jogo em risco de blowout. Calcula nível.
+    is_post_game = game_blowout_level == "final"
+
+    # Calcula nível.
     if game_blowout_pct >= 60:
         if is_starter and player_minutes >= _STARTER_HIGH_MIN:
-            return {
-                "applies": True,
-                "level": "high",
-                "reason": "Titular com alta minutagem — alto risco de ser poupado",
-            }
-        return {
-            "applies": True,
-            "level": "medium",
-            "reason": "Rotação principal — pode perder minutos no garbage time",
-        }
-    if game_blowout_pct >= 45:
-        return {
-            "applies": True,
-            "level": "medium",
-            "reason": "Risco moderado de minutos reduzidos",
-        }
+            level = "high"
+            reason = (
+                "Titular descansado em jogo de blowout"
+                if is_post_game else
+                "Titular com alta minutagem — alto risco de ser poupado"
+            )
+        else:
+            level = "medium"
+            reason = (
+                "Rotação principal — pode ter perdido minutos no garbage time"
+                if is_post_game else
+                "Rotação principal — pode perder minutos no garbage time"
+            )
+    elif game_blowout_pct >= 45:
+        level = "medium"
+        reason = (
+            "Minutos provavelmente reduzidos pelo placar"
+            if is_post_game else
+            "Risco moderado de minutos reduzidos"
+        )
+    else:
+        level = "low"
+        reason = (
+            "Possível descanso pelo placar"
+            if is_post_game else
+            "Pequeno risco de descanso antecipado"
+        )
+
     return {
         "applies": True,
-        "level": "low",
-        "reason": "Pequeno risco de descanso antecipado",
+        "level": level,
+        "reason": reason,
     }
 
 
@@ -291,7 +304,19 @@ def calculate_blowout_risk(
     - Playoffs: corte de 60% no risco (técnicos mantêm titulares).
     """
     if game_status == "final":
-        return (0, "final", "Jogo encerrado")
+        # Para jogo encerrado, calcula o "blowout retroativo" pela margem
+        # final. Permite que o front continue mostrando contexto (titular foi
+        # poupado, banco ganhou minutos) mesmo após o apito final.
+        margin = abs(home_score - away_score)
+        if margin >= 30:
+            return (90, "final", f"Blowout — vitória por {margin} pontos")
+        if margin >= 20:
+            return (75, "final", f"Vitória sólida — margem de {margin} pontos")
+        if margin >= 12:
+            return (50, "final", f"Vitória clara — margem de {margin} pontos")
+        if margin >= 6:
+            return (20, "final", f"Vitória apertada — {margin} pontos")
+        return (5, "final", f"Jogo equilibrado — encerrou em {margin} pts")
     if game_status == "not_started":
         return (0, "low", "Jogo ainda não começou")
 

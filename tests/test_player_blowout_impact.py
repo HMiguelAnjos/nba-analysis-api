@@ -29,13 +29,39 @@ def test_no_blowout_below_floor():
     assert result is None
 
 
-# ─── Jogo finalizado ────────────────────────────────────────────────────────
+# ─── Jogo finalizado em blowout (caso Towns) ───────────────────────────────
 
-def test_final_game_no_flag():
-    """Jogo encerrado: nunca tem mais minutos a perder."""
+def test_final_blowout_game_starter_gets_past_tense_flag():
+    """
+    Caso real (KAT em jogo de 39 pts): jogo finalizado em blowout, titular
+    deve receber flag com past-tense ("Foi descansado / poupado").
+    """
+    result = calculate_player_blowout_impact(
+        player_minutes=24, is_starter=True,
+        game_blowout_pct=90, game_blowout_level="final",
+    )
+    assert result is not None
+    assert result["applies"] is True
+    assert result["level"] == "high"
+    # Past-tense ou descritivo do passado, não "alto risco"
+    assert "alto risco" not in result["reason"].lower()
+
+
+def test_final_close_game_no_flag():
+    """Jogo finalizado equilibrado (pct < 30): ninguém recebe flag."""
     result = calculate_player_blowout_impact(
         player_minutes=35, is_starter=True,
-        game_blowout_pct=80, game_blowout_level="final",
+        game_blowout_pct=15, game_blowout_level="final",
+    )
+    assert result is None
+
+
+def test_final_blowout_bench_end_no_flag():
+    """Mesmo num blowout finalizado, fim de banco NÃO recebe flag
+    (eles ganharam minutos, não perderam)."""
+    result = calculate_player_blowout_impact(
+        player_minutes=8, is_starter=False,
+        game_blowout_pct=90, game_blowout_level="final",
     )
     assert result is None
 

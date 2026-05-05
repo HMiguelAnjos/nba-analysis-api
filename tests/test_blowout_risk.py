@@ -2,14 +2,25 @@
 from src.utils.stats import calculate_blowout_risk
 
 
-def test_final_game_returns_zero_with_final_level():
+def test_final_game_blowout_uses_margin():
+    """Jogo finalizado em blowout retorna pct alto baseado na margem."""
     pct, level, reason = calculate_blowout_risk(
-        period=4, clock="00:00", home_score=120, away_score=88,
+        period=4, clock="00:00", home_score=137, away_score=98,
         game_status="final",
     )
-    assert pct == 0
     assert level == "final"
-    assert "encerrado" in reason.lower()
+    assert pct >= 75, f"Margem 39 pts deveria gerar pct>=75, veio {pct}"
+    assert "39" in reason
+
+
+def test_final_game_close_returns_low_pct():
+    """Jogo finalizado equilibrado tem pct baixo."""
+    pct, level, _ = calculate_blowout_risk(
+        period=4, clock="00:00", home_score=110, away_score=107,
+        game_status="final",
+    )
+    assert level == "final"
+    assert pct < 20
 
 
 def test_not_started_returns_low():
