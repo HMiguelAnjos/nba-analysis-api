@@ -1,9 +1,11 @@
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from nba_api.live.nba.endpoints import boxscore, scoreboard
 
 from src.schemas.live_schemas import (
+    BlowoutRiskSchema,
     LineupGameSchema,
     LineupPlayerSchema,
     LineupTeamSchema,
@@ -16,7 +18,11 @@ from src.schemas.live_schemas import (
 )
 from src.utils.cache import SimpleCache
 from src.utils.photos import player_photo_url
-from src.utils.stats import calculate_player_performance_rating, rounded
+from src.utils.stats import (
+    calculate_blowout_risk,
+    calculate_player_performance_rating,
+    rounded,
+)
 from src.utils.time_utils import format_game_clock, map_game_status, parse_minutes_to_float
 
 logger = logging.getLogger(__name__)
@@ -311,13 +317,34 @@ class LiveGameService:
         logger.info("Building lineup for game %s", game_id)
         game_data = self._fetch_raw_game_data(game_id)
 
+        game_status = map_game_status(game_data.get("gameStatus", 0))
+        period = int(game_data.get("period", 0))
+        clock = format_game_clock(game_data.get("gameClock", ""))
+        home = _parse_lineup_team(game_data.get("homeTeam", {}))
+        away = _parse_lineup_team(game_data.get("awayTeam", {}))
+
+        # Detecta playoff via padrão do game_id (00<TT><Y>...; 04 = playoffs).
+        is_playoff = len(game_id) >= 4 and game_id[2:4] == "04"
+        bo_pct, bo_level, bo_reason = calculate_blowout_risk(
+            period=period,
+            clock=clock,
+            home_score=home.score,
+            away_score=away.score,
+            game_status=game_status,
+            is_playoff=is_playoff,
+        )
+
         result = LineupGameSchema(
             game_id=game_id,
-            game_status=map_game_status(game_data.get("gameStatus", 0)),
-            period=int(game_data.get("period", 0)),
-            clock=format_game_clock(game_data.get("gameClock", "")),
-            home_team=_parse_lineup_team(game_data.get("homeTeam", {})),
-            away_team=_parse_lineup_team(game_data.get("awayTeam", {})),
+            game_status=game_status,
+            period=period,
+            clock=clock,
+            home_team=home,
+            away_team=away,
+            blowout_risk=BlowoutRiskSchema(
+                percentage=bo_pct, level=bo_level, reason=bo_reason
+            ),
+            updated_at=datetime.now(timezone.utc).isoformat(),
         )
         self._cache.set(cache_key, result, BOXSCORE_TTL)
         return result

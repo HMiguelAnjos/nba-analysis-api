@@ -1,0 +1,96 @@
+"""
+Testes para _project_to_end.
+
+Cobre o fix do bug do Barnes (jogo finalizado não pode extrapolar) e
+casos típicos: pouco jogado, ritmo quente, blowout, fouls.
+"""
+from src.services.live_analysis_service import LiveAnalysisService
+
+project = LiveAnalysisService._project_to_end
+
+
+def test_final_game_returns_actual_stat_no_extrapolation():
+    """
+    Bug do Barnes: jogador com 4 reb em 6 minutos não pode projetar 9.9
+    quando o jogo já acabou. Final = stat real, sem margem nenhuma.
+    """
+    low, expected, high = project(
+        stat=4, minutes=6, avg_stat=5.0, avg_minutes=30.0,
+        is_final=True,
+    )
+    assert low == 4.0
+    assert expected == 4.0
+    assert high == 4.0
+
+
+def test_final_game_with_zero_minutes_player():
+    """Reserva que não jogou em jogo final = 0 stat sem extrapolação."""
+    low, expected, high = project(
+        stat=0, minutes=0, avg_stat=10.0, avg_minutes=20.0,
+        is_final=True,
+    )
+    assert (low, expected, high) == (0.0, 0.0, 0.0)
+
+
+def test_zero_minutes_returns_zero():
+    """Jogador que ainda não entrou em quadra (live)."""
+    assert project(stat=0, minutes=0, avg_stat=20.0, avg_minutes=30.0) == (0.0, 0.0, 0.0)
+
+
+def test_live_game_extrapolates():
+    """Live: jogador no Q2 com produção típica → projeção razoável."""
+    low, expected, high = project(
+        stat=10, minutes=15, avg_stat=20.0, avg_minutes=32.0,
+        period=2, game_minutes_remaining=24.0,
+    )
+    # Deve projetar perto do dobro do que ele já fez (mais ou menos)
+    assert expected >= 10.0
+    assert expected <= 25.0
+    assert low <= expected <= high
+
+
+def test_low_minutes_hot_pace_capped():
+    """
+    Cara fez 4 reb em 6 min num jogo ainda rolando — não pode projetar 25.
+    A função deve limitar com weight da temporada e margem.
+    """
+    low, expected, high = project(
+        stat=4, minutes=6, avg_stat=5.0, avg_minutes=30.0,
+        period=1, game_minutes_remaining=42.0,
+    )
+    # Não pode passar de uns 12-15 (avg + boost por hot streak)
+    assert expected < 16.0
+
+
+def test_blowout_reduces_target_minutes():
+    """Blowout severo → menos minutos esperados → projeção menor."""
+    no_blowout = project(
+        stat=10, minutes=20, avg_stat=20.0, avg_minutes=32.0,
+        period=4, game_minutes_remaining=8.0,
+        blowout_severity=0.0,
+    )
+    severe_blowout = project(
+        stat=10, minutes=20, avg_stat=20.0, avg_minutes=32.0,
+        period=4, game_minutes_remaining=8.0,
+        blowout_severity=1.0,
+    )
+    assert severe_blowout[1] <= no_blowout[1]
+
+
+def test_already_above_target_no_extrapolation():
+    """Jogador que já jogou mais que avg_minutes → sem extrapolar."""
+    low, expected, high = project(
+        stat=25, minutes=35, avg_stat=20.0, avg_minutes=30.0,
+        period=4, game_minutes_remaining=2.0,
+    )
+    # Não pode projetar muito além de 25
+    assert expected <= 27.0
+
+
+def test_low_never_below_actual():
+    """Lower bound nunca pode ser menor que o stat real (não dá pra desfazer)."""
+    low, expected, high = project(
+        stat=15, minutes=10, avg_stat=8.0, avg_minutes=30.0,
+        period=2, game_minutes_remaining=24.0,
+    )
+    assert low >= 15.0

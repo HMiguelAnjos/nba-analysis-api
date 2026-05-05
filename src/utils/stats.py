@@ -162,6 +162,120 @@ LOW_CONFIDENCE_MINUTES = 10.0
 LOW_CONFIDENCE_CAP = 7.0
 
 
+# ---------------------------------------------------------------------------
+# Blowout risk (probabilidade de garbage time)
+# ---------------------------------------------------------------------------
+# Combina diferença de placar, período, tempo restante e tipo de jogo
+# (playoff = quase nunca tem blowout) numa porcentagem 0–100 com nível
+# qualitativo e explicação curta.
+
+def _parse_clock_minutes_remaining(clock: str) -> float:
+    """'06:24' → 6.4 minutos. Sem clock → 12 (período inteiro)."""
+    s = (clock or "").strip()
+    if ":" not in s:
+        return 12.0
+    try:
+        mm, ss = s.split(":")
+        return int(mm) + int(ss) / 60.0
+    except (ValueError, IndexError):
+        return 12.0
+
+
+def calculate_blowout_risk(
+    period: int,
+    clock: str,
+    home_score: int,
+    away_score: int,
+    game_status: str = "in_progress",
+    is_playoff: bool = False,
+) -> tuple[int, str, str]:
+    """
+    Estima o risco de garbage time (titulares saindo).
+
+    Returns:
+        (percentage 0-100, level, reason)
+        level ∈ {"low", "medium", "high", "final"}.
+
+    Regras (calibradas pra padrão NBA):
+    - Jogo finalizado → 0%, level "final".
+    - Não iniciado → 0%, level "low".
+    - Q1: praticamente nunca tem blowout (cap 10%).
+    - Q2: começa a importar com diff > 18.
+    - Q3: risco médio/alto se diff > 20.
+    - Q4: risco alto se diff > 15 com pouco tempo restante.
+    - Playoffs: corte de 60% no risco (técnicos mantêm titulares).
+    """
+    if game_status == "final":
+        return (0, "final", "Jogo encerrado")
+    if game_status == "not_started":
+        return (0, "low", "Jogo ainda não começou")
+
+    score_diff = abs(home_score - away_score)
+    period_clamped = max(period, 1)
+    clock_remaining = _parse_clock_minutes_remaining(clock)
+    period_label = f"Q{period_clamped}" if period_clamped <= 4 else f"OT{period_clamped - 4}"
+
+    # ── Componente 1: diferença de placar (escala não-linear) ───────────────
+    # Diff de 10 ainda é virável; 20 é difícil; 30 é praticamente sentenciado.
+    if score_diff <= 5:
+        diff_score = 0.0
+    elif score_diff <= 10:
+        diff_score = (score_diff - 5) * 4.0          # 0→20
+    elif score_diff <= 20:
+        diff_score = 20.0 + (score_diff - 10) * 4.0  # 20→60
+    elif score_diff <= 30:
+        diff_score = 60.0 + (score_diff - 20) * 3.0  # 60→90
+    else:
+        diff_score = 90.0 + min(score_diff - 30, 10) * 1.0  # cap 100
+
+    # ── Componente 2: período (mais tarde = mais peso pro diff) ─────────────
+    # Q1 segura muito — qualquer diff é cedo demais pra concluir blowout.
+    period_multiplier = {1: 0.20, 2: 0.45, 3: 0.75, 4: 1.0}.get(period_clamped, 0.50)
+
+    # ── Componente 3: tempo restante no quarto atual ────────────────────────
+    # Em Q4 com pouco tempo, mesmo diff de 12 é praticamente blowout.
+    # Pesos calibrados pra "Q4 + 18 pts + 3min restantes" ≈ 70%.
+    if period_clamped >= 4:
+        # Q4 com <6 min restantes ganha boost proporcional ao tempo gasto.
+        time_pressure = max((6.0 - clock_remaining) / 6.0, 0.0)
+    else:
+        time_pressure = 0.0
+
+    base = diff_score * period_multiplier + time_pressure * 25.0
+
+    # ── Playoffs: técnicos não relaxam ──────────────────────────────────────
+    if is_playoff:
+        base *= 0.4
+
+    percentage = int(max(0, min(100, round(base))))
+
+    # ── Nível qualitativo ───────────────────────────────────────────────────
+    # 60+ = "high": acima disso é difícil reverter na NBA
+    # 30+ = "medium": titulares já podem começar a sair
+    if percentage >= 60:
+        level = "high"
+    elif percentage >= 30:
+        level = "medium"
+    else:
+        level = "low"
+
+    # ── Explicação humana ───────────────────────────────────────────────────
+    if percentage <= 5:
+        reason = f"Jogo equilibrado ({score_diff} pts no {period_label})"
+    elif period_clamped == 1:
+        reason = f"Diferença de {score_diff} pts no Q1 — cedo pra concluir"
+    elif period_clamped >= 4 and clock_remaining < 4 and score_diff >= 12:
+        reason = f"Diferença de {score_diff} pts no {period_label} com {clock_remaining:.0f} min restantes"
+    elif percentage >= 65:
+        reason = f"Diferença de {score_diff} pts no {period_label} — garbage time iminente"
+    elif percentage >= 35:
+        reason = f"Diferença de {score_diff} pts no {period_label} — banco pode entrar antes"
+    else:
+        reason = f"Diferença de {score_diff} pts no {period_label}"
+
+    return (percentage, level, reason)
+
+
 def _effective_field_goal_pct(
     fgm: int, fga: int, three_pm: int
 ) -> float | None:

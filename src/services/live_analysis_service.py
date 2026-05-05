@@ -2,7 +2,10 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
+from datetime import datetime, timezone
+
 from src.schemas.live_schemas import (
+    BlowoutRiskSchema,
     HotRankingPlayerSchema,
     HotRankingSchema,
     LiveAnalysisErrorSchema,
@@ -416,6 +419,7 @@ class LiveAnalysisService:
         blowout_severity: float = 0.0,
         pace_factor: float = 1.0,
         game_minutes_remaining: float = 0.0,
+        is_final: bool = False,
     ) -> tuple[float, float, float]:
         """
         Projeção até o FIM DO JOGO com margem de erro (low, expected, high).
@@ -441,6 +445,15 @@ class LiveAnalysisService:
 
         Returns: (low, expected, high) já arredondados para 1 casa.
         """
+        # ── Jogo finalizado: zero extrapolação ────────────────────────────
+        # Bug histórico (caso Barnes): jogador com 4 reb em 6 minutos
+        # ganhava projeção de ~10 reb mesmo após o apito final, porque a
+        # função extrapolava avg_minutes × ritmo. Quando o jogo acabou,
+        # o stat real É a final — sem margem, sem incerteza.
+        if is_final:
+            base = float(stat)
+            return (base, base, base)
+
         if minutes <= 0:
             return (0.0, 0.0, 0.0)
 
@@ -507,6 +520,17 @@ class LiveAnalysisService:
         remaining = max(target_minutes - minutes, 0.0)
         expected = stat + blended_rate * remaining
 
+        # ── 3.5 Cap de sanidade ──────────────────────────────────────────
+        # Mesmo um jogador "explodindo" não pode projetar 4× a média histórica.
+        # Limita o teto absoluto a max(avg × 2.5, avg + 6) — permite upside
+        # generoso mas evita projeção absurda quando avg é baixo (ex: cara
+        # de 5 reb/jogo não projeta 20 reb por causa de 6 min quentes).
+        if avg_stat > 0:
+            sanity_cap = max(avg_stat * 2.5, avg_stat + 6.0)
+            # O cap não pode ficar abaixo do que o jogador JÁ tem.
+            sanity_cap = max(sanity_cap, float(stat))
+            expected = min(expected, sanity_cap)
+
         # ── 4. Margem de incerteza ───────────────────────────────────────
         progress = minutes / max(target_minutes, 1.0)
         uncertainty = max(0.15 * (1.0 - progress), 0.05)
@@ -545,13 +569,30 @@ class LiveAnalysisService:
         if consider_blowout is None:
             consider_blowout = not self._is_playoff_game(game_id)
 
+        is_final = bs.game_status == "final"
+        is_playoff = self._is_playoff_game(game_id)
+
         # Contexto do jogo é o mesmo pra todos os jogadores deste game.
         ctx = self._compute_game_context(
             bs.period, bs.clock,
             bs.home_team.score, bs.away_team.score,
             consider_blowout=consider_blowout,
         )
-        blowout_risk = ctx["blowout_severity"] > 0.0
+        blowout_risk_legacy = ctx["blowout_severity"] > 0.0  # flag antiga por jogador
+
+        # Risco de blowout (porcentagem qualitativa) — exposto no payload.
+        from src.utils.stats import calculate_blowout_risk
+        bo_pct, bo_level, bo_reason = calculate_blowout_risk(
+            period=bs.period,
+            clock=bs.clock,
+            home_score=bs.home_team.score,
+            away_score=bs.away_team.score,
+            game_status=bs.game_status,
+            is_playoff=is_playoff,
+        )
+        blowout_payload = BlowoutRiskSchema(
+            percentage=bo_pct, level=bo_level, reason=bo_reason
+        )
 
         def _proj(stat: int, minutes: float, avg_stat: float, avg_minutes: float, fouls: int):
             """Wrapper que aplica fouls + contexto do jogo na projeção."""
@@ -565,6 +606,7 @@ class LiveAnalysisService:
                         blowout_severity=ctx["blowout_severity"],
                         pace_factor=ctx["pace_factor"],
                         game_minutes_remaining=ctx["game_minutes_remaining"],
+                        is_final=is_final,
                     ),
                 ))
             )
@@ -613,7 +655,7 @@ class LiveAnalysisService:
                     ),
                     fouls=p.fouls,
                     foul_trouble=p.fouls >= 4,
-                    blowout_risk=blowout_risk,
+                    blowout_risk=blowout_risk_legacy,
                     on_court=p.on_court,
                     shooting_impact=p.shooting_impact,
                     status=p.status,
@@ -621,4 +663,11 @@ class LiveAnalysisService:
                 )
                 for p in ranking
             ],
+            game_status=bs.game_status,
+            period=bs.period,
+            clock=bs.clock,
+            home_score=bs.home_team.score,
+            away_score=bs.away_team.score,
+            blowout_risk=blowout_payload,
+            updated_at=datetime.now(timezone.utc).isoformat(),
         )

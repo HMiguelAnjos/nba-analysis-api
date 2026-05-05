@@ -215,10 +215,30 @@ class HotRankingPlayerSchema(BaseModel):
     score: float
 
 
+class BlowoutRiskSchema(BaseModel):
+    """
+    Probabilidade estimada de garbage time (titulares saindo, banco assumindo).
+    Calculado a partir do contexto do placar + período + tempo restante.
+    `final` é estado especial para jogos encerrados (não há "risco" futuro).
+    """
+    percentage: int                                                # 0–100
+    level: Literal["low", "medium", "high", "final"]
+    reason: str                                                    # explicação curta
+
+
 class HotRankingSchema(BaseModel):
     game_id: str
     limit: int
     ranking: list[HotRankingPlayerSchema]
+    # Estado do jogo no momento do request — front usa pra renderizar
+    # placar/relógio sem precisar refazer chamada ao scoreboard.
+    game_status: str                                               # not_started | in_progress | final
+    period: int
+    clock: str
+    home_score: int
+    away_score: int
+    blowout_risk: BlowoutRiskSchema
+    updated_at: str                                                # ISO 8601 UTC do snapshot
 
 
 # ------------------------------------------------------------------ #
@@ -289,3 +309,5 @@ class LineupGameSchema(BaseModel):
     clock: str
     home_team: LineupTeamSchema
     away_team: LineupTeamSchema
+    blowout_risk: BlowoutRiskSchema
+    updated_at: str                                                # ISO 8601 UTC
