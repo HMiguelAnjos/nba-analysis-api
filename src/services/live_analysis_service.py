@@ -500,17 +500,20 @@ class LiveAnalysisService:
         season_rate = avg_stat / base_avg_minutes if avg_stat > 0 else current_rate
 
         # ── 3. Peso da temporada ─────────────────────────────────────────
-        # Base: 25% no início → 10% após 10 min jogados.
-        # Extra: reduz ainda mais quando o jogador está claramente acima da
-        # média — se ele está 2× o ritmo histórico, a temporada explica menos
-        # o que está acontecendo hoje.
+        # Base: 40% no início → 20% após 10 min jogados.
+        # (Antes: 25%→10% — frouxo demais; pequena amostra "hot" inflava muito
+        #  a projeção pra cara de 6 pts/jogo virar 15 só por 3 min quentes.)
+        # Extra: reduz quando o jogador está claramente acima da média, MAS
+        # o desconto é proporcional à amostra — sem amostra, sem confiança
+        # pra mexer. Isso impede o cenário Javonte/Tobias de inflar com
+        # 3-5 min jogados.
         sample_factor = min(minutes / 10.0, 1.0)
-        season_weight = 0.25 - (0.15 * sample_factor)          # 0.10 – 0.25
+        season_weight = 0.40 - (0.20 * sample_factor)          # 0.20 – 0.40
         if season_rate > 0 and current_rate > season_rate:
             hot_ratio = current_rate / season_rate              # ex: 2.4 = 2.4× a média
-            # A cada 0.5× acima da média, reduz 20% do season_weight restante
-            # hot_ratio=1.5 → -20%;  hot_ratio=2.0 → -40%;  hot_ratio=3+ → -80%
-            hot_discount = min((hot_ratio - 1.0) * 0.40, 0.80)
+            # Desconto base: cada 0.5× acima da média = -20% do peso da temporada.
+            # Modulado por sample_factor: amostra pequena → desconto pequeno.
+            hot_discount = min((hot_ratio - 1.0) * 0.40, 0.80) * sample_factor
             season_weight *= (1.0 - hot_discount)
 
         blended_rate = (1.0 - season_weight) * current_rate + season_weight * season_rate
@@ -523,12 +526,11 @@ class LiveAnalysisService:
         expected = stat + blended_rate * remaining
 
         # ── 3.5 Cap de sanidade ──────────────────────────────────────────
-        # Mesmo um jogador "explodindo" não pode projetar 4× a média histórica.
-        # Limita o teto absoluto a max(avg × 2.5, avg + 6) — permite upside
-        # generoso mas evita projeção absurda quando avg é baixo (ex: cara
-        # de 5 reb/jogo não projeta 20 reb por causa de 6 min quentes).
+        # Mesmo um jogador "explodindo" não pode projetar muito além da média.
+        # Limita o teto a max(avg × 1.8, avg + 5). Permite hot game (até 80%
+        # acima da média) mas impede absurdos como "Javonte 6.9 pts → 15.2".
         if avg_stat > 0:
-            sanity_cap = max(avg_stat * 2.5, avg_stat + 6.0)
+            sanity_cap = max(avg_stat * 1.8, avg_stat + 5.0)
             # O cap não pode ficar abaixo do que o jogador JÁ tem.
             sanity_cap = max(sanity_cap, float(stat))
             expected = min(expected, sanity_cap)

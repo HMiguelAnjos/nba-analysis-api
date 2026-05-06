@@ -58,8 +58,36 @@ def test_low_minutes_hot_pace_capped():
         stat=4, minutes=6, avg_stat=5.0, avg_minutes=30.0,
         period=1, game_minutes_remaining=42.0,
     )
-    # Não pode passar de uns 12-15 (avg + boost por hot streak)
-    assert expected < 16.0
+    # Cap deve ficar em ~max(5*1.8, 5+5) = 10
+    assert expected <= 10.5
+
+
+def test_javonte_case_low_avg_quick_start_no_inflation():
+    """
+    Regressão real: Javonte Green (avg 6.9 pts em 17.6 min) com 3 pts em 3 min.
+    Antes a fórmula projetava 15.2 — quase 2.2× a média histórica. Cap
+    novo (1.8× ou avg+5) limita em ~12-13.
+    """
+    low, expected, high = project(
+        stat=3, minutes=3, avg_stat=6.9, avg_minutes=17.6,
+        period=2, game_minutes_remaining=24.0,
+    )
+    # Cap teórico: max(6.9*1.8, 6.9+5) = max(12.4, 11.9) = 12.4
+    assert expected <= 12.5, f"Esperado <=12.5, veio {expected}"
+    assert expected >= 4.0, f"Esperado >=4 (não pode regredir abaixo do atual+ritmo razoável), veio {expected}"
+
+
+def test_tobias_case_modest_avg_hot_first_half():
+    """
+    Tobias Harris (avg ~5.5 reb) com 6 reb em 12 min: projeção não pode
+    explodir pra 10+. Cap em ~10.5.
+    """
+    _, expected, _ = project(
+        stat=6, minutes=12, avg_stat=5.5, avg_minutes=30.0,
+        period=2, game_minutes_remaining=24.0,
+    )
+    # Cap: max(5.5*1.8, 5.5+5) = max(9.9, 10.5) = 10.5
+    assert expected <= 10.5
 
 
 def test_blowout_reduces_target_minutes():

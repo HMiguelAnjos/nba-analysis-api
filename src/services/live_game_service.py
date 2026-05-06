@@ -30,7 +30,9 @@ from src.utils.time_utils import format_game_clock, map_game_status, parse_minut
 logger = logging.getLogger(__name__)
 
 SCOREBOARD_TTL = 30   # seconds
-BOXSCORE_TTL = 15     # seconds
+BOXSCORE_TTL = 5      # seconds — clock/score atualizam a cada 5s no front,
+                      # então fazia sentido bater no live API com a mesma cadência.
+                      # cdn.nba.com aguenta sem stress.
 
 
 def _parse_player(p: dict) -> Optional[LivePlayerStatsSchema]:
