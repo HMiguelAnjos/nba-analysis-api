@@ -1,9 +1,12 @@
+import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from nba_api.live.nba.endpoints import boxscore, scoreboard
 
+from src.config import USE_FIXTURES
 from src.schemas.live_schemas import (
     BlowoutRiskSchema,
     LineupGameSchema,
@@ -33,6 +36,19 @@ SCOREBOARD_TTL = 30   # seconds
 BOXSCORE_TTL = 5      # seconds — clock/score atualizam a cada 5s no front,
                       # então fazia sentido bater no live API com a mesma cadência.
                       # cdn.nba.com aguenta sem stress.
+
+# Fixtures path — relativo à raiz do repo (subindo de src/services).
+_FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
+
+
+def _load_fixture(name: str) -> Optional[dict]:
+    """Lê um JSON de tests/fixtures/. Retorna None se não existir."""
+    path = _FIXTURES_DIR / name
+    if not path.exists():
+        logger.warning("Fixture %s não encontrada em %s", name, path)
+        return None
+    with path.open(encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _parse_player(p: dict) -> Optional[LivePlayerStatsSchema]:
@@ -241,13 +257,24 @@ class LiveGameService:
         """
         Fetch live scoreboard directly from the NBA API.
         Called by the background worker — no caching here.
+
+        Quando USE_FIXTURES=1, lê de tests/fixtures/scoreboard_today.json
+        em vez de bater na NBA. Útil pra dev offline / dia sem jogos.
         """
-        logger.info("Fetching live scoreboard from NBA API.")
-        try:
-            board = scoreboard.ScoreBoard()
-            data = board.get_dict()["scoreboard"]
-        except Exception as exc:
-            raise RuntimeError(f"Erro ao buscar scoreboard: {exc}") from exc
+        if USE_FIXTURES:
+            logger.info("USE_FIXTURES: lendo scoreboard de fixture")
+            fixture = _load_fixture("scoreboard_today.json")
+            if fixture is not None:
+                data = fixture["scoreboard"]
+            else:
+                raise RuntimeError("Fixture scoreboard_today.json não encontrada")
+        else:
+            logger.info("Fetching live scoreboard from NBA API.")
+            try:
+                board = scoreboard.ScoreBoard()
+                data = board.get_dict()["scoreboard"]
+            except Exception as exc:
+                raise RuntimeError(f"Erro ao buscar scoreboard: {exc}") from exc
 
         games: list[LiveGameSchema] = []
         for g in data.get("games", []):
@@ -322,17 +349,31 @@ class LiveGameService:
         Cache compartilhado do JSON cru do boxscore (TTL curto).
         get_live_boxscore e get_lineup consomem o mesmo dado, evitando
         2 requests à NBA Live API a cada poll.
+
+        Em modo USE_FIXTURES: tenta `boxscore_<game_id>.json`, depois cai
+        no `boxscore_blowout_final.json` como fallback. Permite testar
+        com jogo de blowout decidido (Celtics x Mavs G5) quando não há
+        jogo ao vivo.
         """
         cache_key = f"raw_boxscore:{game_id}"
         cached = self._cache.get(cache_key)
         if cached:
             return cached
 
-        try:
-            bs = boxscore.BoxScore(game_id=game_id)
-            game_data = bs.get_dict()["game"]
-        except Exception as exc:
-            raise RuntimeError(f"Erro ao buscar boxscore para {game_id}: {exc}") from exc
+        if USE_FIXTURES:
+            fixture = (
+                _load_fixture(f"boxscore_{game_id}.json")
+                or _load_fixture("boxscore_blowout_final.json")
+            )
+            if fixture is None:
+                raise RuntimeError("Nenhuma fixture de boxscore encontrada")
+            game_data = fixture["game"]
+        else:
+            try:
+                bs = boxscore.BoxScore(game_id=game_id)
+                game_data = bs.get_dict()["game"]
+            except Exception as exc:
+                raise RuntimeError(f"Erro ao buscar boxscore para {game_id}: {exc}") from exc
 
         self._cache.set(cache_key, game_data, BOXSCORE_TTL)
         return game_data

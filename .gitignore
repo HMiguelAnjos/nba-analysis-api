@@ -56,3 +56,7 @@ Thumbs.db
 
 # Local Docker overrides
 .docker/
+
+# Fixtures de testes — JSONs reais baixados da NBA pra testar offline.
+# Cada dev gera os seus localmente via `python scripts/fetch_fixtures.py`.
+tests/fixtures/*.json

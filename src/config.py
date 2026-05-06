@@ -34,3 +34,10 @@ STATS_PROXY: str | None = os.getenv("STATS_PROXY") or None
 # Live games worker
 ENABLE_LIVE_WORKER: bool = os.getenv("ENABLE_LIVE_WORKER", "true").lower() == "true"
 LIVE_POLL_INTERVAL_MS: int = int(os.getenv("LIVE_POLL_INTERVAL_MS", "2000"))
+
+# ---------------------------------------------------------------------------
+# Modo fixture (testar offline / sem jogos ao vivo)
+# ---------------------------------------------------------------------------
+# Setar USE_FIXTURES=1 faz o live_game_service ler de tests/fixtures/ em
+# vez de bater na NBA Live API. Útil pra dev quando não tem jogo rolando.
+USE_FIXTURES: bool = os.getenv("USE_FIXTURES", "0") == "1"
