@@ -132,7 +132,11 @@ def calc_player_status(score: float) -> str:
 # tendem a *ganhar* tempo em garbage time — não deveriam receber alerta.
 
 # Limiar abaixo do qual o blowout do jogo é irrelevante pra QUALQUER jogador.
-_BLOWOUT_GAME_FLOOR_PCT = 30
+# 55% = ponto onde o jogo está claramente caminhando pra blowout (não só
+# um quarto difícil). Abaixo disso ainda tem virada possível e técnicos
+# não decidiram poupar ninguém. Calibrado por feedback real (Q4 com 17 pts
+# em 7 min = 48% — ainda jogo, sem alarme).
+_BLOWOUT_GAME_FLOOR_PCT = 55
 
 # Acima desse limiar de minutos, mesmo reserva já é "rotação principal".
 _HIGH_MINUTE_THRESHOLD = 18.0
@@ -163,14 +167,14 @@ def calculate_player_blowout_impact(
         jogo não estiver perto de blowout.
 
     Regras (calibradas pelo padrão de rotação NBA):
-    - Risco do jogo < 30% → ninguém recebe (jogo não está perto de garbage).
+    - Risco do jogo < 55% → ninguém recebe (jogo ainda em disputa real).
     - Reserva com <18 min → não recebe (esses jogadores GANHAM minutos
       no garbage time, então o blowout favorece eles).
     - Titular OU 18+ min → entra no cálculo:
-        * game >= 60 + titular com 22+ min → "high"
-        * game >= 60 outros → "medium"
-        * game >= 45 → "medium"
-        * 30-44 → "low"
+        * game >= 75 + titular com 22+ min → "high"
+        * game >= 75 outros               → "medium"
+        * game >= 65                      → "medium"
+        * 55-64                           → "low"
     - Jogos finalizados (level=='final'): mesma regra, mas usa frase em
       past-tense ("Foi poupado") em vez de prospectiva ("pode ser poupado").
     """
@@ -183,8 +187,9 @@ def calculate_player_blowout_impact(
 
     is_post_game = game_blowout_level == "final"
 
-    # Calcula nível.
-    if game_blowout_pct >= 60:
+    # Calcula nível. Tiers calibrados pra threshold mais alto (55):
+    # 75+ = blowout iminente / consumado; 65-74 = bem provável; 55-64 = sinal sutil.
+    if game_blowout_pct >= 75:
         if is_starter and player_minutes >= _STARTER_HIGH_MIN:
             level = "high"
             reason = (
@@ -199,14 +204,14 @@ def calculate_player_blowout_impact(
                 if is_post_game else
                 "Rotação principal — pode perder minutos no garbage time"
             )
-    elif game_blowout_pct >= 45:
+    elif game_blowout_pct >= 65:
         level = "medium"
         reason = (
             "Minutos provavelmente reduzidos pelo placar"
             if is_post_game else
             "Risco moderado de minutos reduzidos"
         )
-    else:
+    else:  # 55-64
         level = "low"
         reason = (
             "Possível descanso pelo placar"

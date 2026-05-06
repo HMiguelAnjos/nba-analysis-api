@@ -21,10 +21,22 @@ def test_no_blowout_starter_high_minutes_no_flag():
 
 
 def test_no_blowout_below_floor():
-    """blowout_pct abaixo de 30% nunca dispara flag."""
+    """blowout_pct abaixo de 55% nunca dispara flag (jogo ainda em disputa)."""
     result = calculate_player_blowout_impact(
         player_minutes=35, is_starter=True,
-        game_blowout_pct=29, game_blowout_level="low",
+        game_blowout_pct=54, game_blowout_level="medium",
+    )
+    assert result is None
+
+
+def test_q4_competitive_game_no_flag():
+    """
+    Caso real (LAL @ OKC Q4 07:32, 17 pts): backend calcula ~48% por causa
+    do tempo + diff. Não pode flagar — jogo ainda virável.
+    """
+    result = calculate_player_blowout_impact(
+        player_minutes=30, is_starter=True,
+        game_blowout_pct=48, game_blowout_level="medium",
     )
     assert result is None
 
@@ -109,31 +121,21 @@ def test_starter_high_minutes_high_blowout_high_level():
     assert "Titular" in result["reason"]
 
 
-def test_starter_low_minutes_high_blowout_medium_level():
-    """Titular com 19 min em blowout alto: medium (jogou pouco até agora)."""
-    result = calculate_player_blowout_impact(
-        player_minutes=19, is_starter=True,
-        game_blowout_pct=70, game_blowout_level="high",
-    )
-    assert result is not None
-    assert result["level"] == "medium"
-
-
-def test_starter_medium_blowout_medium_level():
-    """Titular num jogo com blowout 50%: nivel medium."""
+def test_starter_mid_blowout_medium_level():
+    """Titular num jogo com blowout 70%: medium (provável mas não certo)."""
     result = calculate_player_blowout_impact(
         player_minutes=25, is_starter=True,
-        game_blowout_pct=50, game_blowout_level="medium",
+        game_blowout_pct=70, game_blowout_level="medium",
     )
     assert result is not None
     assert result["level"] == "medium"
 
 
-def test_starter_low_blowout_low_level():
-    """Titular num jogo com blowout 35%: nivel low (mas marca)."""
+def test_starter_marginal_blowout_low_level():
+    """Titular num jogo com blowout 58%: nivel low (sinal sutil)."""
     result = calculate_player_blowout_impact(
         player_minutes=24, is_starter=True,
-        game_blowout_pct=35, game_blowout_level="medium",
+        game_blowout_pct=58, game_blowout_level="medium",
     )
     assert result is not None
     assert result["level"] == "low"
