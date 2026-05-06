@@ -535,6 +535,24 @@ class LiveAnalysisService:
             sanity_cap = max(sanity_cap, float(stat))
             expected = min(expected, sanity_cap)
 
+        # ── 3.6 Shrinkage para a média (regression to the mean) ──────────
+        # Bayesian-light: quando a amostra é pequena E o ritmo atual está
+        # claramente acima da média histórica, a projeção é puxada de volta
+        # pra média. É a defesa contra "3 pts em 3 minutos vira 12 pts" —
+        # estatisticamente, esses 3 minutos não são preditivos do desfecho.
+        # Apaga gradualmente até 8 minutos de jogo (depois disso, amostra
+        # já tem peso suficiente pra falar por si).
+        if (
+            avg_stat > 0
+            and minutes < 8.0
+            and season_rate > 0
+            and current_rate > season_rate * 1.4
+        ):
+            shrinkage = (8.0 - minutes) / 8.0   # 0.625 a 3 min, 0 a 8 min
+            expected = expected * (1.0 - shrinkage) + avg_stat * shrinkage
+            # Nunca deixa a projeção ficar abaixo do que o jogador já tem.
+            expected = max(expected, float(stat))
+
         # ── 4. Margem de incerteza ───────────────────────────────────────
         progress = minutes / max(target_minutes, 1.0)
         uncertainty = max(0.15 * (1.0 - progress), 0.05)

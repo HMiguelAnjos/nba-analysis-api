@@ -65,16 +65,43 @@ def test_low_minutes_hot_pace_capped():
 def test_javonte_case_low_avg_quick_start_no_inflation():
     """
     Regressão real: Javonte Green (avg 6.9 pts em 17.6 min) com 3 pts em 3 min.
-    Antes a fórmula projetava 15.2 — quase 2.2× a média histórica. Cap
-    novo (1.8× ou avg+5) limita em ~12-13.
+    Antes a fórmula projetava 15.2 — quase 2.2× a média histórica. Com cap
+    + shrinkage para a média em amostra pequena, deve ficar perto da média
+    com leve uptick (8-10 pts).
     """
     low, expected, high = project(
         stat=3, minutes=3, avg_stat=6.9, avg_minutes=17.6,
         period=2, game_minutes_remaining=24.0,
     )
-    # Cap teórico: max(6.9*1.8, 6.9+5) = max(12.4, 11.9) = 12.4
-    assert expected <= 12.5, f"Esperado <=12.5, veio {expected}"
-    assert expected >= 4.0, f"Esperado >=4 (não pode regredir abaixo do atual+ritmo razoável), veio {expected}"
+    # Após shrinkage: ~12.4 * 0.375 + 6.9 * 0.625 ≈ 8.95
+    assert expected <= 10.0, f"Esperado <=10, veio {expected}"
+    assert expected >= 4.0, f"Esperado >=4 (não pode regredir abaixo do que ele já tem), veio {expected}"
+
+
+def test_shrinkage_disabled_after_8_min():
+    """Após ~8 min, shrinkage não age — projeção é a do ritmo + cap."""
+    _, expected_early, _ = project(
+        stat=10, minutes=4, avg_stat=10.0, avg_minutes=30.0,
+        period=2, game_minutes_remaining=28.0,
+    )
+    _, expected_later, _ = project(
+        stat=10, minutes=10, avg_stat=10.0, avg_minutes=30.0,
+        period=2, game_minutes_remaining=24.0,
+    )
+    # Aos 10 min sem shrinkage: deve projetar mais (mais info, mais confiança no ritmo)
+    assert expected_later >= expected_early - 1.0
+
+
+def test_shrinkage_only_when_hot():
+    """Ritmo normal/baixo nem é tocado pelo shrinkage."""
+    # Jogador fazendo média na média: shrinkage não aplica
+    _, expected, _ = project(
+        stat=2, minutes=4, avg_stat=15.0, avg_minutes=30.0,  # ritmo 0.5 pts/min vs season 0.5
+        period=1, game_minutes_remaining=44.0,
+    )
+    # Sem shrinkage, projeta 2 + 0.5*~26 = 15. Com shrinkage seria menor.
+    # Verifica que ficou no esperado (não foi puxado abaixo).
+    assert expected >= 12.0
 
 
 def test_tobias_case_modest_avg_hot_first_half():
