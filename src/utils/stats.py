@@ -124,6 +124,86 @@ def calc_player_status(score: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Synthetic bookmaker fair line
+# ---------------------------------------------------------------------------
+# Aproxima como um bookmaker definiria a linha de prop bet para o jogador,
+# usando os mesmos sinais que eles ponderam: temporada (baseline), últimos
+# 10 jogos (forma atual), últimos 5 jogos (forma muito recente).
+#
+# Não é tão preciso quanto pegar a linha real (Bet365 etc.) — mas chega
+# muito perto e é gratuito. Quando integrarmos uma API de odds real, esse
+# fair_line vira só fallback.
+
+# Pesos calibrados pra match com lines típicas observadas nas casas:
+# - 30% temporada: piso de regressão à média
+# - 40% últimos 10: peso central, captura forma corrente
+# - 30% últimos 5: capturar hot/cold muito recente
+_FAIR_LINE_W_SEASON = 0.30
+_FAIR_LINE_W_LAST10 = 0.40
+_FAIR_LINE_W_LAST5  = 0.30
+
+# Vig aproximado (over geralmente é a "side" mais marcada — bookmaker
+# sobe um pouco a linha pra equilibrar). Ajuste pequeno, calibrado pra
+# media de mercado.
+_FAIR_LINE_VIG = 0.5
+
+
+def calculate_fair_line(
+    season_avg: float,
+    last_10_avg: float,
+    last_5_avg: float,
+) -> float:
+    """
+    Estima a linha de prop bet pra esse stat (PTS/REB/AST/etc.).
+
+    Mistura a média da temporada com formas recentes (últimos 10 e 5 jogos),
+    aplicando vig de over típico do bookmaker. Retorna o valor arredondado
+    com .5 (formato padrão de linha NBA: 4.5, 22.5, 9.5...).
+
+    Args:
+        season_avg: média da temporada inteira do jogador
+        last_10_avg: média dos últimos 10 jogos
+        last_5_avg:  média dos últimos 5 jogos
+
+    Returns:
+        Linha estimada (float). Sempre >= 0.5 pra evitar linhas absurdas
+        em jogadores de baixa produção.
+    """
+    blend = (
+        _FAIR_LINE_W_SEASON * season_avg
+        + _FAIR_LINE_W_LAST10 * last_10_avg
+        + _FAIR_LINE_W_LAST5 * last_5_avg
+    )
+    line = blend - _FAIR_LINE_VIG
+
+    # Arredondamento padrão de linha NBA: vai pro próximo .5 mais próximo.
+    # Ex: 4.06 → 4.5, 22.18 → 22.5, 7.74 → 7.5.
+    rounded_half = round(line * 2) / 2
+
+    # Linhas abaixo de 0.5 não existem no mercado — protege contra ruído
+    # de jogadores com produção microscópica.
+    return max(0.5, rounded_half)
+
+
+def calculate_edge_decision(edge: float) -> str:
+    """
+    Mapeia o edge (projeção − linha estimada) para uma decisão.
+
+    Pontos absolutos, não percentuais — esses são os tamanhos típicos
+    de aposta com valor positivo na NBA.
+    """
+    if edge >= 2.0:
+        return "STRONG_OVER"
+    if edge >= 1.0:
+        return "LEAN_OVER"
+    if edge <= -2.0:
+        return "STRONG_UNDER"
+    if edge <= -1.0:
+        return "LEAN_UNDER"
+    return "NEUTRAL"
+
+
+# ---------------------------------------------------------------------------
 # Player-level blowout impact
 # ---------------------------------------------------------------------------
 # Distingue o RISCO DO JOGO (blowout %) do IMPACTO SOBRE O JOGADOR.

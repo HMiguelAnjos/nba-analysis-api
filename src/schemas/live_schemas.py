@@ -185,6 +185,25 @@ class PaceProjectionSchema(BaseModel):
     high: float
 
 
+class FairLineSchema(BaseModel):
+    """
+    Linha estimada (synthetic bookmaker) pra um mercado específico.
+
+    `line` é a linha que estimamos que um bookmaker abriria.
+    `edge` é (nossa_projeção_fim_de_jogo − line) — positivo = OVER tem
+    valor; negativo = UNDER tem valor.
+    `decision` é o resumo de strategy a partir do edge:
+      STRONG_OVER (>=+2) | LEAN_OVER (>=+1) |
+      NEUTRAL (-1<edge<+1) |
+      LEAN_UNDER (<=-1) | STRONG_UNDER (<=-2).
+    """
+    line: float
+    edge: float
+    decision: Literal[
+        "STRONG_OVER", "LEAN_OVER", "NEUTRAL", "LEAN_UNDER", "STRONG_UNDER"
+    ]
+
+
 class BlowoutRiskSchema(BaseModel):
     """
     Probabilidade estimada de garbage time (titulares saindo, banco assumindo).
@@ -231,6 +250,19 @@ class HotRankingPlayerSchema(BaseModel):
     pace_projection_points: PaceProjectionSchema
     pace_projection_assists: PaceProjectionSchema
     pace_projection_rebounds: PaceProjectionSchema
+    # Médias recentes — base para o synthetic fair line.
+    last_5_points: float
+    last_5_rebounds: float
+    last_5_assists: float
+    last_10_points: float
+    last_10_rebounds: float
+    last_10_assists: float
+    # Linha estimada (synthetic bookmaker) + edge da nossa projeção.
+    # Substitui o sinal puro de "atual vs esperado" por algo ancorado
+    # na linha provável do mercado.
+    fair_line_points: FairLineSchema
+    fair_line_rebounds: FairLineSchema
+    fair_line_assists: FairLineSchema
     # Contexto que altera a projeção (ajustes já aplicados em pace_projection_*)
     fouls: int
     foul_trouble: bool          # 4+ faltas com risco real de banco

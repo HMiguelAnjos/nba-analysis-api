@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from src.schemas.live_schemas import (
     BlowoutRiskSchema,
+    FairLineSchema,
     HotRankingPlayerSchema,
     HotRankingSchema,
     LiveAnalysisErrorSchema,
@@ -54,7 +55,13 @@ class LiveAnalysisService:
     def _get_season_averages(
         self, player_id: int, season: str
     ) -> Optional[dict[str, float]]:
-        """Fetch and cache season averages for a player. Returns None on failure."""
+        """
+        Fetch and cache season averages for a player. Returns None on failure.
+
+        Inclui também last_5 e last_10 averages (PTS/REB/AST) — usado pelo
+        synthetic fair line. Esses dados já são calculados pelo
+        get_season_analysis, só precisamos propagar.
+        """
         cache_key = f"season_avg:{player_id}:{season}"
         cached = self._cache.get(cache_key)
         if cached is not None:
@@ -73,6 +80,13 @@ class LiveAnalysisService:
                 "three_pointers_attempted": result.averages.three_pointers_attempted,
                 "free_throws_made": result.averages.free_throws_made,
                 "free_throws_attempted": result.averages.free_throws_attempted,
+                # Recências — pra synthetic fair line
+                "last_5_points":    result.last_5_games.points,
+                "last_5_rebounds":  result.last_5_games.rebounds,
+                "last_5_assists":   result.last_5_games.assists,
+                "last_10_points":   result.last_10_games.points,
+                "last_10_rebounds": result.last_10_games.rebounds,
+                "last_10_assists":  result.last_10_games.assists,
             }
             self._cache.set(cache_key, avgs, SEASON_AVG_TTL)
             logger.info("Season averages cached for player %d (%s)", player_id, season)
@@ -602,7 +616,12 @@ class LiveAnalysisService:
         )
 
         # Risco de blowout (porcentagem qualitativa) — exposto no payload.
-        from src.utils.stats import calculate_blowout_risk, calculate_player_blowout_impact
+        from src.utils.stats import (
+            calculate_blowout_risk,
+            calculate_edge_decision,
+            calculate_fair_line,
+            calculate_player_blowout_impact,
+        )
         bo_pct, bo_level, bo_reason = calculate_blowout_risk(
             period=bs.period,
             clock=bs.clock,
@@ -642,63 +661,110 @@ class LiveAnalysisService:
                 ))
             )
 
+        def _fair_line(
+            season_avg: float,
+            last_10_avg: float,
+            last_5_avg: float,
+            projection: float,
+        ) -> FairLineSchema:
+            """
+            Linha estimada (synthetic bookmaker) + edge da projeção.
+            Edge = projeção_fim_de_jogo − linha_estimada.
+            """
+            line = calculate_fair_line(season_avg, last_10_avg, last_5_avg)
+            edge = round(projection - line, 1)
+            decision = calculate_edge_decision(edge)
+            return FairLineSchema(line=line, edge=edge, decision=decision)
+
+        # Lookup das médias recentes (last_5 / last_10) por player_id.
+        # _get_season_averages é cacheado, então isso é praticamente free.
+        # Defaults pra zero se algum jogador não tiver dados (evita travar
+        # toda a resposta por 1 falha pontual de fetch da temporada).
+        recent_avgs_by_id: dict[int, dict[str, float]] = {}
+        for p in ranking:
+            avgs = self._get_season_averages(p.player_id, season) or {}
+            recent_avgs_by_id[p.player_id] = avgs
+
+        def _build_player(p) -> HotRankingPlayerSchema:
+            r = recent_avgs_by_id.get(p.player_id, {})
+            l5_p  = r.get("last_5_points",    p.season_average.points)
+            l5_r  = r.get("last_5_rebounds",  p.season_average.rebounds)
+            l5_a  = r.get("last_5_assists",   p.season_average.assists)
+            l10_p = r.get("last_10_points",   p.season_average.points)
+            l10_r = r.get("last_10_rebounds", p.season_average.rebounds)
+            l10_a = r.get("last_10_assists",  p.season_average.assists)
+
+            proj_pts = _proj(p.current.points, p.minutes,
+                             p.season_average.points, p.season_average.minutes, p.fouls)
+            proj_ast = _proj(p.current.assists, p.minutes,
+                             p.season_average.assists, p.season_average.minutes, p.fouls)
+            proj_reb = _proj(p.current.rebounds, p.minutes,
+                             p.season_average.rebounds, p.season_average.minutes, p.fouls)
+
+            return HotRankingPlayerSchema(
+                player_id=p.player_id,
+                name=p.name,
+                team=p.team,
+                minutes=p.minutes,
+                current_points=p.current.points,
+                current_assists=p.current.assists,
+                current_rebounds=p.current.rebounds,
+                expected_points=p.expected_until_now.points,
+                expected_assists=p.expected_until_now.assists,
+                expected_rebounds=p.expected_until_now.rebounds,
+                points_diff=p.difference.points,
+                assists_diff=p.difference.assists,
+                rebounds_diff=p.difference.rebounds,
+                projected_points=self._project_game(
+                    p.current.points, p.minutes,
+                    p.season_average.points, p.season_average.minutes,
+                ),
+                projected_assists=self._project_game(
+                    p.current.assists, p.minutes,
+                    p.season_average.assists, p.season_average.minutes,
+                ),
+                projected_rebounds=self._project_game(
+                    p.current.rebounds, p.minutes,
+                    p.season_average.rebounds, p.season_average.minutes,
+                ),
+                pace_projection_points=proj_pts,
+                pace_projection_assists=proj_ast,
+                pace_projection_rebounds=proj_reb,
+                # Médias recentes — base do synthetic fair line.
+                last_5_points=l5_p,
+                last_5_rebounds=l5_r,
+                last_5_assists=l5_a,
+                last_10_points=l10_p,
+                last_10_rebounds=l10_r,
+                last_10_assists=l10_a,
+                # Linha estimada + edge (projeção − linha) por mercado.
+                fair_line_points=_fair_line(
+                    p.season_average.points, l10_p, l5_p, proj_pts.expected,
+                ),
+                fair_line_rebounds=_fair_line(
+                    p.season_average.rebounds, l10_r, l5_r, proj_reb.expected,
+                ),
+                fair_line_assists=_fair_line(
+                    p.season_average.assists, l10_a, l5_a, proj_ast.expected,
+                ),
+                fouls=p.fouls,
+                foul_trouble=p.fouls >= 4,
+                blowout_impact=_impact(p),
+                # blowout_risk legacy: True se houver impact pra ESTE jogador
+                # (não mais "any blowout risk no jogo"). Mantido pra
+                # compatibilidade até o front migrar.
+                blowout_risk=_impact(p) is not None,
+                on_court=p.on_court,
+                is_starter=p.is_starter,
+                shooting_impact=p.shooting_impact,
+                status=p.status,
+                score=p.score,
+            )
+
         return HotRankingSchema(
             game_id=game_id,
             limit=limit,
-            ranking=[
-                HotRankingPlayerSchema(
-                    player_id=p.player_id,
-                    name=p.name,
-                    team=p.team,
-                    minutes=p.minutes,
-                    current_points=p.current.points,
-                    current_assists=p.current.assists,
-                    current_rebounds=p.current.rebounds,
-                    expected_points=p.expected_until_now.points,
-                    expected_assists=p.expected_until_now.assists,
-                    expected_rebounds=p.expected_until_now.rebounds,
-                    points_diff=p.difference.points,
-                    assists_diff=p.difference.assists,
-                    rebounds_diff=p.difference.rebounds,
-                    projected_points=self._project_game(
-                        p.current.points, p.minutes,
-                        p.season_average.points, p.season_average.minutes,
-                    ),
-                    projected_assists=self._project_game(
-                        p.current.assists, p.minutes,
-                        p.season_average.assists, p.season_average.minutes,
-                    ),
-                    projected_rebounds=self._project_game(
-                        p.current.rebounds, p.minutes,
-                        p.season_average.rebounds, p.season_average.minutes,
-                    ),
-                    pace_projection_points=_proj(
-                        p.current.points, p.minutes,
-                        p.season_average.points, p.season_average.minutes, p.fouls,
-                    ),
-                    pace_projection_assists=_proj(
-                        p.current.assists, p.minutes,
-                        p.season_average.assists, p.season_average.minutes, p.fouls,
-                    ),
-                    pace_projection_rebounds=_proj(
-                        p.current.rebounds, p.minutes,
-                        p.season_average.rebounds, p.season_average.minutes, p.fouls,
-                    ),
-                    fouls=p.fouls,
-                    foul_trouble=p.fouls >= 4,
-                    blowout_impact=_impact(p),
-                    # blowout_risk legacy: True se houver impact pra ESTE jogador
-                    # (não mais "any blowout risk no jogo"). Mantido pra
-                    # compatibilidade até o front migrar.
-                    blowout_risk=_impact(p) is not None,
-                    on_court=p.on_court,
-                    is_starter=p.is_starter,
-                    shooting_impact=p.shooting_impact,
-                    status=p.status,
-                    score=p.score,
-                )
-                for p in ranking
-            ],
+            ranking=[_build_player(p) for p in ranking],
             game_status=bs.game_status,
             period=bs.period,
             clock=bs.clock,
